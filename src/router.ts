@@ -188,6 +188,7 @@ async function loadCandidates(env: Env, routeName: string): Promise<CandidateRow
     JOIN route_entries re ON re.route_id = r.id
     JOIN providers p ON p.id = re.provider_id
     JOIN provider_keys pk ON pk.provider_id = p.id
+      AND (re.provider_key_id IS NULL OR pk.id = re.provider_key_id)
     WHERE r.name = ? AND p.enabled = 1 AND pk.enabled = 1
     ORDER BY re.position ASC, COALESCE(pk.last_used_at, '') ASC, pk.created_at ASC`
   )

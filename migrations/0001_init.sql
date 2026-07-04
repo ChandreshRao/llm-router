@@ -3,6 +3,10 @@ CREATE TABLE IF NOT EXISTS providers (
   name TEXT NOT NULL,
   base_url TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  open_router_authors TEXT,
+  open_router_providers TEXT,
+  strip_open_router_prefix TEXT,
+  models_synced_at TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -29,6 +33,7 @@ CREATE TABLE IF NOT EXISTS route_entries (
   id TEXT PRIMARY KEY,
   route_id TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
   provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  provider_key_id TEXT REFERENCES provider_keys(id) ON DELETE SET NULL,
   upstream_model TEXT NOT NULL,
   position INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -60,10 +65,25 @@ CREATE TABLE IF NOT EXISTS usage_log (
   error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS provider_models (
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'sync',
+  PRIMARY KEY (provider_id, model_id)
+);
+
+CREATE TABLE IF NOT EXISTS provider_model_exclusions (
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  PRIMARY KEY (provider_id, model_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_provider_keys_provider ON provider_keys(provider_id);
 CREATE INDEX IF NOT EXISTS idx_route_entries_route ON route_entries(route_id, position);
 CREATE INDEX IF NOT EXISTS idx_usage_created_at ON usage_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_client_key ON usage_log(client_key_id);
+CREATE INDEX IF NOT EXISTS idx_provider_models_provider ON provider_models(provider_id);
+CREATE INDEX IF NOT EXISTS idx_provider_model_exclusions_provider ON provider_model_exclusions(provider_id);
 
 INSERT OR IGNORE INTO providers (id, name, base_url, enabled) VALUES
   ('openai', 'OpenAI', 'https://api.openai.com/v1', 1),

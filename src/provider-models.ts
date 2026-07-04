@@ -20,6 +20,16 @@ export type ProviderModelsSyncResult = {
   models: string[];
 };
 
+export type CachedProviderModel = {
+  modelId: string;
+  source: "sync" | "manual";
+};
+
+export type CachedProviderModelsResponse = {
+  models: CachedProviderModel[];
+  excludedCount: number;
+};
+
 export async function fetchProviderModels(env: Env, providerId: string): Promise<ProviderModelsResult> {
   const provider = await env.DB.prepare("SELECT id, base_url FROM providers WHERE id = ?")
     .bind(providerId)
@@ -30,6 +40,11 @@ export async function fetchProviderModels(env: Env, providerId: string): Promise
   }
 
   const fallback = fallbackModels(providerId);
+  const cachedModels = await getCachedProviderModels(env, providerId);
+  if (cachedModels.length > 0) {
+    return { models: cachedModels, source: "cached", error: null };
+  }
+
   const keyRow = await env.DB.prepare(
     "SELECT api_key_ciphertext FROM provider_keys WHERE provider_id = ? AND enabled = 1 ORDER BY created_at ASC LIMIT 1"
   )
@@ -45,21 +60,8 @@ export async function fetchProviderModels(env: Env, providerId: string): Promise
       }
     } catch (error) {
       const nativeError = error instanceof Error ? error.message : "Failed to fetch models";
-      const cachedModels = await getCachedProviderModels(env, providerId);
-      if (cachedModels.length > 0) {
-        return {
-          models: cachedModels,
-          source: "cached",
-          error: `${nativeError}. Showing synced catalog instead.`
-        };
-      }
       return withFallback({ models: [], source: "fallback", error: nativeError }, fallback);
     }
-  }
-
-  const cachedModels = await getCachedProviderModels(env, providerId);
-  if (cachedModels.length > 0) {
-    return { models: cachedModels, source: "cached", error: null };
   }
 
   return withFallback(
@@ -70,11 +72,120 @@ export async function fetchProviderModels(env: Env, providerId: string): Promise
 }
 
 export async function getCachedProviderModels(env: Env, providerId: string): Promise<string[]> {
-  const rows = await env.DB.prepare("SELECT model_id FROM provider_models WHERE provider_id = ? ORDER BY model_id")
-    .bind(providerId)
-    .all<{ model_id: string }>();
+  const rows = await getCachedProviderModelsWithMeta(env, providerId);
+  return rows.map((row) => row.modelId);
+}
 
-  return (rows.results ?? []).map((row) => row.model_id);
+export async function getCachedProviderModelsWithMeta(env: Env, providerId: string): Promise<CachedProviderModel[]> {
+  const rows = await env.DB.prepare(
+    "SELECT model_id, source FROM provider_models WHERE provider_id = ? ORDER BY model_id"
+  )
+    .bind(providerId)
+    .all<{ model_id: string; source: string }>();
+
+  return (rows.results ?? []).map((row) => ({
+    modelId: row.model_id,
+    source: row.source === "manual" ? "manual" : "sync"
+  }));
+}
+
+export async function getCachedProviderModelsResponse(env: Env, providerId: string): Promise<CachedProviderModelsResponse> {
+  const provider = await env.DB.prepare("SELECT id FROM providers WHERE id = ?").bind(providerId).first<{ id: string }>();
+  if (!provider) {
+    throw new Error("Provider not found");
+  }
+
+  const [models, excludedCount] = await Promise.all([
+    getCachedProviderModelsWithMeta(env, providerId),
+    getProviderModelExclusionCount(env, providerId)
+  ]);
+
+  return { models, excludedCount };
+}
+
+export async function addManualProviderModel(env: Env, providerId: string, modelId: string): Promise<void> {
+  const provider = await env.DB.prepare("SELECT id FROM providers WHERE id = ?").bind(providerId).first<{ id: string }>();
+  if (!provider) {
+    throw new Error("Provider not found");
+  }
+
+  const existing = await env.DB.prepare("SELECT model_id FROM provider_models WHERE provider_id = ? AND model_id = ?")
+    .bind(providerId, modelId)
+    .first<{ model_id: string }>();
+  if (existing) {
+    throw new Error("Model already exists in catalog");
+  }
+
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO provider_models (provider_id, model_id, source) VALUES (?, ?, 'manual')").bind(providerId, modelId),
+    env.DB.prepare("DELETE FROM provider_model_exclusions WHERE provider_id = ? AND model_id = ?").bind(providerId, modelId)
+  ]);
+}
+
+export async function renameProviderModel(
+  env: Env,
+  providerId: string,
+  oldModelId: string,
+  newModelId: string
+): Promise<void> {
+  const row = await env.DB.prepare("SELECT source FROM provider_models WHERE provider_id = ? AND model_id = ?")
+    .bind(providerId, oldModelId)
+    .first<{ source: string }>();
+  if (!row) {
+    throw new Error("Model not found");
+  }
+
+  const duplicate = await env.DB.prepare("SELECT model_id FROM provider_models WHERE provider_id = ? AND model_id = ?")
+    .bind(providerId, newModelId)
+    .first<{ model_id: string }>();
+  if (duplicate) {
+    throw new Error("Target model ID already exists in catalog");
+  }
+
+  const statements = [
+    env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ? AND model_id = ?").bind(providerId, oldModelId),
+    env.DB.prepare("INSERT INTO provider_models (provider_id, model_id, source) VALUES (?, ?, ?)").bind(
+      providerId,
+      newModelId,
+      row.source
+    ),
+    env.DB.prepare("DELETE FROM provider_model_exclusions WHERE provider_id = ? AND model_id = ?").bind(providerId, newModelId)
+  ];
+
+  if (row.source === "sync") {
+    statements.push(
+      env.DB.prepare("INSERT OR IGNORE INTO provider_model_exclusions (provider_id, model_id) VALUES (?, ?)").bind(
+        providerId,
+        oldModelId
+      )
+    );
+  }
+
+  await env.DB.batch(statements);
+}
+
+export async function deleteProviderModel(env: Env, providerId: string, modelId: string): Promise<void> {
+  const row = await env.DB.prepare("SELECT source FROM provider_models WHERE provider_id = ? AND model_id = ?")
+    .bind(providerId, modelId)
+    .first<{ source: string }>();
+  if (!row) {
+    throw new Error("Model not found");
+  }
+
+  const statements = [
+    env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ? AND model_id = ?").bind(providerId, modelId)
+  ];
+
+  if (row.source === "sync") {
+    statements.push(
+      env.DB.prepare("INSERT OR IGNORE INTO provider_model_exclusions (provider_id, model_id) VALUES (?, ?)").bind(
+        providerId,
+        modelId
+      )
+    );
+  }
+
+  await env.DB.batch(statements);
 }
 
 export async function syncProviderModelsFromOpenRouter(env: Env, providerId: string): Promise<ProviderModelsSyncResult> {
@@ -109,11 +220,19 @@ export async function syncProviderModelsFromOpenRouter(env: Env, providerId: str
     throw new Error("OpenRouter catalog returned no models");
   }
 
+  const exclusions = await getProviderModelExclusions(env, providerId);
+  const toInsert = models.filter((model) => !exclusions.has(model));
   const syncedAt = new Date().toISOString();
-  await env.DB.batch([env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ?").bind(providerId)]);
 
-  const insertStatements = models.map((model) =>
-    env.DB.prepare("INSERT INTO provider_models (provider_id, model_id) VALUES (?, ?)").bind(providerId, model)
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ? AND source = 'sync'").bind(providerId)
+  ]);
+
+  const insertStatements = toInsert.map((model) =>
+    env.DB.prepare("INSERT OR IGNORE INTO provider_models (provider_id, model_id, source) VALUES (?, ?, 'sync')").bind(
+      providerId,
+      model
+    )
   );
   await runStatementBatches(env, insertStatements);
 
@@ -123,12 +242,30 @@ export async function syncProviderModelsFromOpenRouter(env: Env, providerId: str
     ).bind(syncedAt, providerId)
   ]);
 
+  const catalogModels = await getCachedProviderModels(env, providerId);
+
   return {
     providerId,
-    modelCount: models.length,
+    modelCount: catalogModels.length,
     syncedAt,
-    models
+    models: catalogModels
   };
+}
+
+async function getProviderModelExclusions(env: Env, providerId: string): Promise<Set<string>> {
+  const rows = await env.DB.prepare("SELECT model_id FROM provider_model_exclusions WHERE provider_id = ?")
+    .bind(providerId)
+    .all<{ model_id: string }>();
+
+  return new Set((rows.results ?? []).map((row) => row.model_id));
+}
+
+async function getProviderModelExclusionCount(env: Env, providerId: string): Promise<number> {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM provider_model_exclusions WHERE provider_id = ?")
+    .bind(providerId)
+    .first<{ count: number }>();
+
+  return row?.count ?? 0;
 }
 
 async function fetchNativeModels(baseUrl: string, apiKey: string): Promise<string[]> {
