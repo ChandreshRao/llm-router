@@ -57,6 +57,7 @@ type UsageRow = {
 type StatsWindow = "24h" | "7d" | "30d" | "all";
 
 type DashboardBreakdown = {
+  id: string;
   name: string;
   requests: number;
   totalTokens: number;
@@ -451,7 +452,7 @@ function BreakdownTable({ title, rows, emptyLabel }: { title: string; rows: Dash
         </div>
         {rows.length === 0 && <p className="hint">{emptyLabel}</p>}
         {rows.map((row) => (
-          <div key={row.name} className="breakdown-row">
+          <div key={row.id} className="breakdown-row">
             <span>{row.name}</span>
             <span>{formatNumber(row.requests)}</span>
             <span>{formatNumber(row.totalTokens)}</span>
@@ -599,21 +600,23 @@ function ProvidersPanel({
     }
 
     try {
-      await api.patch(`/admin/providers/${providerId}/models/${encodeURIComponent(oldModelId)}`, { modelId: newModelId });
+      const response = await api.patch<{ message?: string }>(
+        `/admin/providers/${providerId}/models/${encodeURIComponent(oldModelId)}`,
+        { modelId: newModelId }
+      );
       setEditingModels((current) => {
         const next = { ...current };
         delete next[`${providerId}:${oldModelId}`];
         return next;
       });
-      await loadCachedModels(providerId);
-      await onChange("Model updated.");
+      await Promise.all([loadCachedModels(providerId), onChange(response.message ?? "Model updated.")]);
     } catch (error) {
       await onChange(error instanceof Error ? `Update failed: ${error.message}` : "Update failed.");
     }
   }
 
   async function deleteCatalogModel(providerId: string, modelId: string) {
-    if (!(await askConfirm(`Delete model "${modelId}" from the catalog? Synced models stay excluded on the next sync.`))) {
+    if (!(await askConfirm(`Delete model "${modelId}" from the catalog? This is blocked if any route still uses the model.`))) {
       return;
     }
 
@@ -662,8 +665,8 @@ function ProvidersPanel({
           <div>
             <h2>Model Catalog</h2>
             <p className="hint">
-              Sync from OpenRouter at the top. Delete models you do not want; they stay excluded on the next sync. Add manual models anytime. Renaming a
-              catalog model does not update existing route entries.
+              Sync from OpenRouter at the top to add new models to the catalog. Delete is blocked while a route still uses a model. Renaming updates matching
+              route entries automatically.
             </p>
           </div>
           <button type="button" className="secondary" onClick={() => void syncAllCatalogs()} disabled={syncingAll}>
@@ -907,7 +910,13 @@ function RoutesPanel({
   const selectedRoute = routes.find((route) => route.id === selectedRouteId) ?? firstRoute;
   const selectedEntries = selectedRoute ? entries.filter((entry) => entry.route_id === selectedRoute.id).sort((a, b) => a.position - b.position) : [];
   const entriesKey = useMemo(
-    () => selectedEntries.map((entry) => `${entry.id}:${entry.provider_id}:${entry.upstream_model}:${entry.position}`).join("|"),
+    () =>
+      selectedEntries
+        .map(
+          (entry) =>
+            `${entry.id}:${entry.provider_id}:${entry.provider_key_id ?? ""}:${entry.upstream_model}:${entry.position}`
+        )
+        .join("|"),
     [selectedEntries]
   );
   const [name, setName] = useState(selectedRoute?.name ?? "default");
@@ -916,7 +925,7 @@ function RoutesPanel({
   const [customModelRows, setCustomModelRows] = useState<Set<number>>(new Set());
 
   const loadModels = useCallback(
-    async (providerId: string) => {
+    async (providerId: string, mergeUpstream = false) => {
       if (!providerId) {
         return;
       }
@@ -932,7 +941,15 @@ function RoutesPanel({
       }));
 
       try {
-        const data = await api.get<{ models: string[]; source: ProviderModelSource; error: string | null }>(`/admin/providers/${providerId}/models`);
+        const path = mergeUpstream
+          ? `/admin/providers/${providerId}/models?mergeUpstream=1`
+          : `/admin/providers/${providerId}/models`;
+        const data = await api.get<{
+          models: string[];
+          source: ProviderModelSource;
+          error: string | null;
+          addedCount?: number;
+        }>(path);
         setModelLists((current) => ({
           ...current,
           [providerId]: {
@@ -975,12 +992,16 @@ function RoutesPanel({
 
   async function saveRoute() {
     const payload = { name, entries: draftEntries.filter((entry) => entry.providerId && entry.upstreamModel) };
-    if (selectedRoute) {
-      await api.put(`/admin/routes/${selectedRoute.id}`, payload);
-    } else {
-      await api.post("/admin/routes", payload);
+    try {
+      if (selectedRoute) {
+        await api.put(`/admin/routes/${selectedRoute.id}`, payload);
+      } else {
+        await api.post("/admin/routes", payload);
+      }
+      await onChange("Route saved.");
+    } catch (error) {
+      await onChange(error instanceof Error ? error.message : "Failed to save route.");
     }
-    await onChange("Route saved.");
   }
 
   function updateProvider(index: number, providerId: string) {
@@ -996,7 +1017,10 @@ function RoutesPanel({
   return (
     <section className="card">
       <h2>Routes</h2>
-      <p className="hint">Model list uses your curated catalog when populated. Choose Other to type a custom model ID.</p>
+      <p className="hint">
+        Model list uses your curated catalog when populated. Use ↻ to fetch upstream models and add any missing IDs to the catalog. Only enabled provider keys
+        can be pinned.
+      </p>
       <div className="toolbar">
         <select value={selectedRoute?.id ?? ""} onChange={(event) => setSelectedRouteId(event.target.value)}>
           {routes.map((route) => (
@@ -1038,11 +1062,10 @@ function RoutesPanel({
             >
               <option value="">Any enabled key</option>
               {providerKeys
-                .filter((key) => key.provider_id === entry.providerId)
+                .filter((key) => key.provider_id === entry.providerId && key.enabled === 1)
                 .map((key) => (
                   <option key={key.id} value={key.id}>
                     {key.name}
-                    {key.enabled !== 1 ? " (disabled)" : ""}
                   </option>
                 ))}
             </select>
@@ -1051,7 +1074,7 @@ function RoutesPanel({
               upstreamModel={entry.upstreamModel}
               modelState={entry.providerId ? modelLists[entry.providerId] : undefined}
               forceCustom={customModelRows.has(index)}
-              onReload={() => void loadModels(entry.providerId)}
+              onReload={() => void loadModels(entry.providerId, true)}
               onChange={(upstreamModel) => setDraftEntries(updateAt(draftEntries, index, { ...entry, upstreamModel }))}
               onCustomModeChange={(enabled) =>
                 setCustomModelRows((current) => {
@@ -1150,7 +1173,7 @@ function UpstreamModelField({
             onChange(value);
           }}
         />
-        <button type="button" className="secondary model-reload" onClick={onReload} disabled={loading} title="Refresh model list">
+        <button type="button" className="secondary model-reload" onClick={onReload} disabled={loading} title="Fetch upstream models and add missing IDs to the catalog">
           ↻
         </button>
       </div>
@@ -1424,7 +1447,17 @@ function makeApi(adminToken: string) {
     });
 
     if (!response.ok) {
-      throw new Error(await response.text());
+      const text = await response.text();
+      let message = text;
+      try {
+        const body = JSON.parse(text) as { error?: string };
+        if (body.error) {
+          message = body.error;
+        }
+      } catch {
+        // keep raw response text
+      }
+      throw new Error(message);
     }
 
     return response.json() as Promise<T>;
