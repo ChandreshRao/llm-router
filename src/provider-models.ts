@@ -65,7 +65,7 @@ export async function fetchProviderModels(env: Env, providerId: string): Promise
   return withFallback(
     { models: [], source: "fallback", error: null },
     fallback,
-    keyRow ? "Could not load models from provider or synced catalog" : "Add a provider API key or sync models from OpenRouter"
+    "Add a provider API key or sync models from OpenRouter"
   );
 }
 
@@ -110,11 +110,14 @@ export async function syncProviderModelsFromOpenRouter(env: Env, providerId: str
   }
 
   const syncedAt = new Date().toISOString();
+  await env.DB.batch([env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ?").bind(providerId)]);
+
+  const insertStatements = models.map((model) =>
+    env.DB.prepare("INSERT INTO provider_models (provider_id, model_id) VALUES (?, ?)").bind(providerId, model)
+  );
+  await runStatementBatches(env, insertStatements);
+
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM provider_models WHERE provider_id = ?").bind(providerId),
-    ...models.map((model) =>
-      env.DB.prepare("INSERT INTO provider_models (provider_id, model_id) VALUES (?, ?)").bind(providerId, model)
-    ),
     env.DB.prepare(
       "UPDATE providers SET models_synced_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
     ).bind(syncedAt, providerId)
@@ -195,6 +198,14 @@ function fallbackModels(providerId: string): string[] {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+const D1_BATCH_CHUNK_SIZE = 50;
+
+async function runStatementBatches(env: Env, statements: D1PreparedStatement[]): Promise<void> {
+  for (let i = 0; i < statements.length; i += D1_BATCH_CHUNK_SIZE) {
+    await env.DB.batch(statements.slice(i, i + D1_BATCH_CHUNK_SIZE));
+  }
 }
 
 async function safeText(response: Response): Promise<string> {

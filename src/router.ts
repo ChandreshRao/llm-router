@@ -30,7 +30,12 @@ export async function handleChatCompletions(
   clientKeyId: string | null
 ): Promise<Response> {
   const started = Date.now();
-  const incomingBody = (await request.json()) as OpenAIChatBody;
+  let incomingBody: OpenAIChatBody;
+  try {
+    incomingBody = (await request.json()) as OpenAIChatBody;
+  } catch {
+    return jsonError(400, "Invalid JSON body");
+  }
   const requestedModel = typeof incomingBody.model === "string" ? incomingBody.model : "default";
   const routeName = await resolveRouteName(env, requestedModel);
   const candidates = await loadCandidates(env, routeName);
@@ -47,7 +52,7 @@ export async function handleChatCompletions(
       latencyMs: Date.now() - started,
       error: "No enabled route entries with enabled provider keys"
     });
-    return jsonError(502, "No enabled route entries with enabled provider keys", failures);
+    return jsonError(502, "No enabled route entries with enabled provider keys");
   }
 
   for (const candidate of candidates) {
@@ -115,14 +120,26 @@ export async function handleChatCompletions(
       .bind(candidate.provider_key_id)
       .run();
 
-    if (body.stream && upstreamResponse.body) {
-      const [clientStream, loggingStream] = upstreamResponse.body.tee();
-      const response = new Response(clientStream, copyResponseInit(upstreamResponse));
-      queueUsage(env, ctx, {
-        baseUsage: { ...baseUsage, latencyMs: Date.now() - started },
-        stream: loggingStream
-      });
-      return response;
+    if (body.stream) {
+      if (!upstreamResponse.body) {
+        if (upstreamResponse.ok) {
+          failures.push({
+            provider: candidate.provider_name,
+            model: candidate.upstream_model,
+            status: upstreamResponse.status,
+            reason: "upstream returned no stream body"
+          });
+          continue;
+        }
+      } else {
+        const [clientStream, loggingStream] = upstreamResponse.body.tee();
+        const response = new Response(clientStream, copyResponseInit(upstreamResponse));
+        queueUsage(env, ctx, {
+          baseUsage: { ...baseUsage, latencyMs: Date.now() - started },
+          stream: loggingStream
+        });
+        return response;
+      }
     }
 
     const responseForClient = upstreamResponse.clone();
@@ -144,7 +161,7 @@ export async function handleChatCompletions(
     error: failures.map((failure) => `${failure.provider}: ${failure.reason}`).join("; ")
   });
 
-  return jsonError(502, "All configured providers failed or are cooling down", failures);
+  return jsonError(502, "All configured providers failed or are cooling down");
 }
 
 async function resolveRouteName(env: Env, requestedModel: string): Promise<string> {
@@ -216,7 +233,15 @@ function buildUpstreamHeaders(request: Request, apiKey: string): Headers {
 }
 
 function shouldFallback(status: number): boolean {
-  return status === 402 || status === 408 || status === 409 || status === 429 || status >= 500;
+  return (
+    status === 401 ||
+    status === 402 ||
+    status === 403 ||
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    status >= 500
+  );
 }
 
 async function isCoolingDown(env: Env, providerKeyId: string): Promise<boolean> {
@@ -263,11 +288,22 @@ function queueUsage(
   options: { baseUsage: UsagePayload; response?: Response; stream?: ReadableStream<Uint8Array> }
 ): void {
   const promise = (async () => {
-    const parsed = options.stream ? await parseStreamingUsage(options.stream) : options.response ? await parseJsonUsage(options.response) : {};
-    await logUsage(env, {
-      ...options.baseUsage,
-      ...parsed
-    });
+    try {
+      const parsed = options.stream
+        ? await parseStreamingUsage(options.stream)
+        : options.response
+          ? await parseJsonUsage(options.response)
+          : {};
+      await logUsage(env, {
+        ...options.baseUsage,
+        ...parsed
+      });
+    } catch (error) {
+      await logUsage(env, {
+        ...options.baseUsage,
+        error: error instanceof Error ? error.message : "usage logging failed"
+      });
+    }
   })();
 
   ctx.waitUntil(promise);
@@ -281,8 +317,8 @@ async function safeResponseText(response: Response): Promise<string> {
   }
 }
 
-function jsonError(status: number, error: string, attempts: AttemptFailure[]): Response {
-  return Response.json({ error, attempts }, { status });
+function jsonError(status: number, error: string): Response {
+  return Response.json({ error }, { status });
 }
 
 function readNumber(value: string | undefined, fallback: number): number {
