@@ -47,7 +47,7 @@ npm run build
 npx wrangler dev
 ```
 
-Open the local Worker URL and enter `ADMIN_TOKEN` in the admin UI.
+Open the local Worker URL and enter `ADMIN_TOKEN` in the admin UI. The token is stored in **session storage** for the current browser tab only (it is cleared when you close the tab).
 
 ## Cloudflare Setup
 
@@ -103,7 +103,7 @@ The migration seeds these OpenAI-compatible provider base URLs:
 In the admin UI:
 
 1. Add one or more API keys for each provider you want to use.
-2. In **Providers → Model Catalog**, configure OpenRouter mapping per provider and use **Sync from OpenRouter** to populate the local catalog. Delete models you do not want; they stay excluded on the next sync. Route model dropdowns use this curated catalog when it has entries.
+2. In **Providers → Model Catalog**, configure OpenRouter mapping per provider and use **Sync from OpenRouter** to populate the local catalog. Use **↻** on the Routes tab to fetch upstream models and add any missing IDs to the catalog. Delete models you do not want; they stay excluded on the next sync. Delete is blocked while a route still references a model.
 3. Create or edit a route, such as `default`.
 4. Add fallback steps in the order you prefer, each with a provider and upstream model name.
 5. Generate a client key for each application.
@@ -151,9 +151,9 @@ When a request arrives:
 1. The Worker verifies the generated `sk-router-...` client key.
 2. The requested `model` is treated as a route name. Unknown routes fall back to `default`.
 3. Route entries are tried in order.
-4. For each provider, enabled keys are tried by oldest `last_used_at` first.
-5. `401`, `402`, `403`, `408`, `409`, `429`, `5xx`, network errors, and timeouts trigger cooldown and fallback.
-6. If all candidates fail, the Worker returns `502` with the attempted providers.
+4. For each provider, enabled keys are tried by oldest `last_used_at` first. A route step can pin a specific provider key; only enabled keys can be pinned.
+5. `401`, `402`, `403`, `408`, `409`, `429`, `5xx`, network errors, and timeouts trigger cooldown and fallback to the next candidate. Upstream auth failures (`401`/`403`) are treated as key-level failures so the router can try another key or provider instead of returning the upstream error immediately. Each fallback is logged in the Worker console and recorded in `usage_log`.
+6. If all candidates fail, the Worker returns `502` with an `attempts` array describing each failure.
 
 Default cooldowns are configured in `wrangler.jsonc`:
 
@@ -163,12 +163,22 @@ Default cooldowns are configured in `wrangler.jsonc`:
 
 ## Verification
 
-Build and deploy checks:
+Build, unit tests, optional integration tests, and deploy checks:
 
 ```powershell
 npm run build
+npm test
 npm run db:migrate:local
 npx wrangler deploy --dry-run
+```
+
+`npm test` runs unit tests and the Gemini integration test. The Gemini test **skips** when `GEMINI_API_KEY` is unset, so CI stays green without secrets.
+
+To run the Gemini check locally:
+
+```powershell
+$env:GEMINI_API_KEY = "your-key"
+npm run test:integration
 ```
 
 Smoke test against a running local or deployed router:
@@ -183,9 +193,18 @@ In another terminal, after configuring a provider key, the `default` route, and 
 ```powershell
 $env:ROUTER_BASE_URL = "http://localhost:8787"
 $env:ROUTER_API_KEY = "sk-router-your-generated-client-key"
-npm run test:router
+npm run test:smoke
 ```
 
-The script always checks `/health` and client-key auth. With `ROUTER_API_KEY` set, it also sends a real chat completion through the router. Add `$env:STREAM = "1"` to test streaming, or pass `--create-client-key` with `ADMIN_TOKEN` to create a temporary client key for the run.
+The smoke script always checks `/health` and client-key auth. With `ROUTER_API_KEY` set, it also sends a real chat completion through the router. Add `$env:STREAM = "1"` to test streaming, or pass `--create-client-key` with `ADMIN_TOKEN` to create a temporary client key for the run.
 
 Real-provider verification requires adding at least one provider API key in the admin UI and configuring at least one route entry.
+
+### Tests layout
+
+| Location | Purpose | Runs in CI |
+|----------|---------|------------|
+| `tests/unit/` | Automated unit tests | Yes (`npm run test:unit`) |
+| `tests/smoke/gemini-key.mjs` | Optional Gemini key integration test | Yes, skips without `GEMINI_API_KEY` (`npm run test:integration`) |
+| `tests/smoke/router.mjs` | Smoke tests against a running router | No — needs `wrangler dev` (`npm run test:smoke:router`) |
+| `tests/smoke/run-all.mjs` | Router smoke + Gemini integration | Manual (`npm run test:smoke`) |
