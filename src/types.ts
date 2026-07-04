@@ -30,6 +30,12 @@ export type ProviderCatalogRow = ProviderRow & {
   model_count: number;
 };
 
+export type ProviderModelRow = {
+  provider_id: string;
+  model_id: string;
+  source: "sync" | "manual";
+};
+
 export type ProviderKeyRow = {
   id: string;
   provider_id: string;
@@ -52,6 +58,8 @@ export type RouteEntryRow = {
   id: string;
   route_id: string;
   provider_id: string;
+  provider_key_id: string | null;
+  provider_key_name: string | null;
   provider_name: string;
   base_url: string;
   upstream_model: string;

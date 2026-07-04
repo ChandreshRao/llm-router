@@ -103,9 +103,10 @@ The migration seeds these OpenAI-compatible provider base URLs:
 In the admin UI:
 
 1. Add one or more API keys for each provider you want to use.
-2. Create or edit a route, such as `default`.
-3. Add fallback steps in the order you prefer, each with a provider and upstream model name.
-4. Generate a client key for each application.
+2. In **Providers → Model Catalog**, configure OpenRouter mapping per provider and use **Sync from OpenRouter** to populate the local catalog. Delete models you do not want; they stay excluded on the next sync. Route model dropdowns use this curated catalog when it has entries.
+3. Create or edit a route, such as `default`.
+4. Add fallback steps in the order you prefer, each with a provider and upstream model name.
+5. Generate a client key for each application.
 
 Provider keys are write-only in the UI. Generated client keys are shown once.
 
