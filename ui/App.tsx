@@ -74,10 +74,15 @@ type ProviderCatalog = {
 
 const tabs = ["Providers", "Routes", "Client keys", "Usage"] as const;
 const CUSTOM_MODEL_VALUE = "__custom__";
+const ADMIN_TOKEN_KEY = "adminToken";
 type Tab = (typeof tabs)[number];
 
+function readAdminToken(): string {
+  return sessionStorage.getItem(ADMIN_TOKEN_KEY) ?? "";
+}
+
 export function App() {
-  const [adminToken, setAdminToken] = useState(() => localStorage.getItem("adminToken") ?? "");
+  const [adminToken, setAdminToken] = useState(() => readAdminToken());
   const [tokenInput, setTokenInput] = useState(adminToken);
   const [activeTab, setActiveTab] = useState<Tab>("Providers");
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -143,7 +148,7 @@ export function App() {
 
   function saveToken(event: FormEvent) {
     event.preventDefault();
-    localStorage.setItem("adminToken", tokenInput);
+    sessionStorage.setItem(ADMIN_TOKEN_KEY, tokenInput);
     setAdminToken(tokenInput);
   }
 
@@ -172,7 +177,7 @@ export function App() {
         <button
           className="secondary"
           onClick={() => {
-            localStorage.removeItem("adminToken");
+            sessionStorage.removeItem(ADMIN_TOKEN_KEY);
             setAdminToken("");
           }}
         >
@@ -465,6 +470,10 @@ function RoutesPanel({
   const [selectedRouteId, setSelectedRouteId] = useState(firstRoute?.id ?? "");
   const selectedRoute = routes.find((route) => route.id === selectedRouteId) ?? firstRoute;
   const selectedEntries = selectedRoute ? entries.filter((entry) => entry.route_id === selectedRoute.id).sort((a, b) => a.position - b.position) : [];
+  const entriesKey = useMemo(
+    () => selectedEntries.map((entry) => `${entry.id}:${entry.provider_id}:${entry.upstream_model}:${entry.position}`).join("|"),
+    [selectedEntries]
+  );
   const [name, setName] = useState(selectedRoute?.name ?? "default");
   const [draftEntries, setDraftEntries] = useState<Array<{ providerId: string; upstreamModel: string }>>([]);
   const [modelLists, setModelLists] = useState<Record<string, ProviderModelsState>>({});
@@ -526,7 +535,7 @@ function RoutesPanel({
         void loadModels(entry.provider_id);
       }
     }
-  }, [selectedRoute?.id, entries.length, loadModels]);
+  }, [selectedRoute?.id, entriesKey, loadModels]);
 
   async function saveRoute() {
     const payload = { name, entries: draftEntries.filter((entry) => entry.providerId && entry.upstreamModel) };

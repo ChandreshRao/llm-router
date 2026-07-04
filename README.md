@@ -98,7 +98,7 @@ The migration seeds these OpenAI-compatible provider base URLs:
 - OpenRouter: `https://openrouter.ai/api/v1`
 - GitHub Models: `https://models.github.ai/inference`
 - Gemini: `https://generativelanguage.googleapis.com/v1beta/openai`
-- Anthropic: `https://api.anthropic.com/v1`
+- Anthropic: `https://api.anthropic.com/v1` (native API is not OpenAI-compatible; use OpenRouter or another gateway for `/chat/completions`)
 
 In the admin UI:
 
@@ -151,7 +151,7 @@ When a request arrives:
 2. The requested `model` is treated as a route name. Unknown routes fall back to `default`.
 3. Route entries are tried in order.
 4. For each provider, enabled keys are tried by oldest `last_used_at` first.
-5. `402`, `408`, `409`, `429`, `5xx`, network errors, and timeouts trigger cooldown and fallback.
+5. `401`, `402`, `403`, `408`, `409`, `429`, `5xx`, network errors, and timeouts trigger cooldown and fallback.
 6. If all candidates fail, the Worker returns `502` with the attempted providers.
 
 Default cooldowns are configured in `wrangler.jsonc`:

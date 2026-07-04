@@ -276,7 +276,7 @@ export function createAdminApi(): Hono<AdminApp> {
   });
 
   app.get("/usage", async (c) => {
-    const limit = Math.min(Number(c.req.query("limit") ?? 100), 500);
+    const limit = readBoundedLimit(c.req.query("limit"), 100, 500);
     const rows = await c.env.DB.prepare(
       `SELECT
         u.*, ck.name AS client_key_name, p.name AS provider_name
@@ -306,6 +306,12 @@ export function createAdminApi(): Hono<AdminApp> {
   });
 
   return app;
+}
+
+function readBoundedLimit(value: string | undefined, fallback: number, max: number): number {
+  const parsed = Number(value);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Math.min(limit, max);
 }
 
 async function saveRoute(

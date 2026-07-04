@@ -56,6 +56,7 @@ export const providerDefaults = [
     }
   },
   {
+    // Native Anthropic uses /messages, not OpenAI /chat/completions — use OpenRouter or a compatible gateway.
     id: "anthropic",
     name: "Anthropic",
     baseUrl: "https://api.anthropic.com/v1",
