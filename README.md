@@ -414,7 +414,7 @@ Default cooldowns are configured in `wrangler.jsonc`:
 - `DEFAULT_COOLDOWN_429_SECONDS`: `300`
 - `DEFAULT_COOLDOWN_5XX_SECONDS`: `60`
 - `UPSTREAM_TIMEOUT_MS`: `60000`
-- `ADAPTIVE_ROUTING_ENABLED`: `true` — reorder fallbacks by recent provider health
+- `ADAPTIVE_ROUTING_ENABLED`: `false` — set to `true` to reorder fallbacks by recent provider health
 - `ADAPTIVE_ROUTING_WINDOW_HOURS`: `24` — rolling window for health scoring
 
 ## Verification

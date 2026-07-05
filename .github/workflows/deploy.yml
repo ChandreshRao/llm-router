@@ -9,6 +9,8 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -22,9 +24,12 @@ jobs:
         run: npm run build
 
       - name: Inject Cloudflare resource IDs
+        env:
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
         run: |
-          sed -i "s/PLACEHOLDER_D1_DATABASE_ID/${{ vars.D1_DATABASE_ID }}/" wrangler.jsonc
-          sed -i "s/PLACEHOLDER_KV_NAMESPACE_ID/${{ vars.KV_NAMESPACE_ID }}/" wrangler.jsonc
+          sed -i "s/PLACEHOLDER_D1_DATABASE_ID/${D1_DATABASE_ID}/" wrangler.jsonc
+          sed -i "s/PLACEHOLDER_KV_NAMESPACE_ID/${KV_NAMESPACE_ID}/" wrangler.jsonc
 
       - name: Apply D1 migrations
         env:

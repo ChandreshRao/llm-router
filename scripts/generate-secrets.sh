@@ -4,7 +4,14 @@ set -euo pipefail
 
 random_alnum() {
   local length="$1"
-  LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "$length"
+  local result="" byte
+  while ((${#result} < length)); do
+    IFS= read -r -n 1 byte < /dev/urandom || return 1
+    case "$byte" in
+      [a-zA-Z0-9]) result+="$byte" ;;
+    esac
+  done
+  printf '%s' "$result"
 }
 
 admin_token="$(random_alnum 48)"
