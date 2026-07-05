@@ -1,4 +1,5 @@
 import { decryptSecret } from "./crypto";
+import { type AttemptFailure, readNumber, shouldFallback } from "./router-logic";
 import { logUsage, parseJsonUsage, parseStreamingUsage } from "./usage";
 import type { Env, OpenAIChatBody, UsagePayload } from "./types";
 
@@ -12,13 +13,6 @@ type CandidateRow = {
   position: number;
 };
 
-type AttemptFailure = {
-  provider: string;
-  model: string;
-  status?: number;
-  reason: string;
-};
-
 type WaitUntilContext = {
   waitUntil(promise: Promise<unknown>): void;
 };
@@ -30,7 +24,12 @@ export async function handleChatCompletions(
   clientKeyId: string | null
 ): Promise<Response> {
   const started = Date.now();
-  const incomingBody = (await request.json()) as OpenAIChatBody;
+  let incomingBody: OpenAIChatBody;
+  try {
+    incomingBody = (await request.json()) as OpenAIChatBody;
+  } catch {
+    return jsonError(400, "Invalid JSON body");
+  }
   const requestedModel = typeof incomingBody.model === "string" ? incomingBody.model : "default";
   const routeName = await resolveRouteName(env, requestedModel);
   const candidates = await loadCandidates(env, routeName);
@@ -88,12 +87,16 @@ export async function handleChatCompletions(
     if (shouldFallback(upstreamResponse.status)) {
       const errorText = await safeResponseText(upstreamResponse);
       await setCooldown(env, candidate.provider_key_id, `${upstreamResponse.status}`);
+      const reason = errorText || upstreamResponse.statusText;
       failures.push({
         provider: candidate.provider_name,
         model: candidate.upstream_model,
         status: upstreamResponse.status,
-        reason: errorText || upstreamResponse.statusText
+        reason
       });
+      console.warn(
+        `[router] fallback after ${upstreamResponse.status} from ${candidate.provider_name}/${candidate.upstream_model}: ${reason}`
+      );
       continue;
     }
 
@@ -115,7 +118,20 @@ export async function handleChatCompletions(
       .bind(candidate.provider_key_id)
       .run();
 
-    if (body.stream && upstreamResponse.body) {
+    if (body.stream) {
+      if (!upstreamResponse.body) {
+        const reason = upstreamResponse.ok
+          ? "upstream returned no stream body"
+          : `upstream returned no stream body (${upstreamResponse.status})`;
+        failures.push({
+          provider: candidate.provider_name,
+          model: candidate.upstream_model,
+          status: upstreamResponse.status,
+          reason
+        });
+        continue;
+      }
+
       const [clientStream, loggingStream] = upstreamResponse.body.tee();
       const response = new Response(clientStream, copyResponseInit(upstreamResponse));
       queueUsage(env, ctx, {
@@ -133,6 +149,7 @@ export async function handleChatCompletions(
     return responseForClient;
   }
 
+  const errorDetail = failures.map((failure) => `${failure.provider}: ${failure.reason}`).join("; ");
   await logUsage(env, {
     clientKeyId,
     routeName,
@@ -141,7 +158,7 @@ export async function handleChatCompletions(
     upstreamModel: null,
     status: 502,
     latencyMs: Date.now() - started,
-    error: failures.map((failure) => `${failure.provider}: ${failure.reason}`).join("; ")
+    error: errorDetail
   });
 
   return jsonError(502, "All configured providers failed or are cooling down", failures);
@@ -171,6 +188,7 @@ async function loadCandidates(env: Env, routeName: string): Promise<CandidateRow
     JOIN route_entries re ON re.route_id = r.id
     JOIN providers p ON p.id = re.provider_id
     JOIN provider_keys pk ON pk.provider_id = p.id
+      AND (re.provider_key_id IS NULL OR pk.id = re.provider_key_id)
     WHERE r.name = ? AND p.enabled = 1 AND pk.enabled = 1
     ORDER BY re.position ASC, COALESCE(pk.last_used_at, '') ASC, pk.created_at ASC`
   )
@@ -213,10 +231,6 @@ function buildUpstreamHeaders(request: Request, apiKey: string): Headers {
   }
 
   return headers;
-}
-
-function shouldFallback(status: number): boolean {
-  return status === 402 || status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
 async function isCoolingDown(env: Env, providerKeyId: string): Promise<boolean> {
@@ -263,11 +277,22 @@ function queueUsage(
   options: { baseUsage: UsagePayload; response?: Response; stream?: ReadableStream<Uint8Array> }
 ): void {
   const promise = (async () => {
-    const parsed = options.stream ? await parseStreamingUsage(options.stream) : options.response ? await parseJsonUsage(options.response) : {};
-    await logUsage(env, {
-      ...options.baseUsage,
-      ...parsed
-    });
+    try {
+      const parsed = options.stream
+        ? await parseStreamingUsage(options.stream)
+        : options.response
+          ? await parseJsonUsage(options.response)
+          : {};
+      await logUsage(env, {
+        ...options.baseUsage,
+        ...parsed
+      });
+    } catch (error) {
+      await logUsage(env, {
+        ...options.baseUsage,
+        error: error instanceof Error ? error.message : "usage logging failed"
+      });
+    }
   })();
 
   ctx.waitUntil(promise);
@@ -281,11 +306,6 @@ async function safeResponseText(response: Response): Promise<string> {
   }
 }
 
-function jsonError(status: number, error: string, attempts: AttemptFailure[]): Response {
+function jsonError(status: number, error: string, attempts: AttemptFailure[] = []): Response {
   return Response.json({ error, attempts }, { status });
-}
-
-function readNumber(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

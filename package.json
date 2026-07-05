@@ -10,7 +10,11 @@
     "db:migrate:local": "wrangler d1 migrations apply llm-router --local",
     "db:migrate": "wrangler d1 migrations apply llm-router --remote",
     "typecheck": "tsc --noEmit",
-    "test:router": "node scripts/test-router.mjs"
+    "test:unit": "node --import tsx --test tests/unit/*.test.ts",
+    "test:integration": "node tests/smoke/gemini-key.mjs",
+    "test:smoke:router": "node tests/smoke/router.mjs",
+    "test:smoke": "node tests/smoke/run-all.mjs",
+    "test": "npm run test:unit && npm run test:integration"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +30,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "tsx": "^4.20.3",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
     "wrangler": "^4.107.0"
