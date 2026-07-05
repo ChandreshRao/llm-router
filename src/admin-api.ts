@@ -1,7 +1,18 @@
 import { Hono } from "hono";
 import { adminAuth } from "./auth";
 import { encryptSecret, makeClientSecret, makeId, sha256Hex } from "./crypto";
-import { fetchProviderModels, syncProviderModelsFromOpenRouter } from "./provider-models";
+import {
+  addManualProviderModel,
+  deleteProviderModel,
+  fetchProviderModels,
+  getCachedProviderModelsResponse,
+  mergeUpstreamModelsIntoCatalog,
+  renameProviderModel,
+  syncProviderModelsFromOpenRouter
+} from "./provider-models";
+import { formatModelRenamedMessage } from "./model-route-usage";
+import { parseStatsWindow, readBoundedLimit, statsWindowCutoff } from "./query-params";
+import { validatePinnedProviderKeys, type RouteEntryInput } from "./route-validation";
 import { isOpenRouterProvider, providerDefaults, resolveProviderCatalog } from "./providers";
 import type { ClientKeyRow, Env, ProviderCatalogRow, ProviderRow, RouteEntryRow, RouteRow, Variables } from "./types";
 
@@ -121,8 +132,81 @@ export function createAdminApi(): Hono<AdminApp> {
   });
 
   app.get("/providers/:id/models", async (c) => {
+    if (c.req.query("mergeUpstream") === "1") {
+      try {
+        const merged = await mergeUpstreamModelsIntoCatalog(c.env, c.req.param("id"));
+        return c.json({
+          models: merged.models,
+          source: "cached" as const,
+          error: null,
+          addedCount: merged.addedCount
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to refresh models from upstream";
+        return c.json({ error: message }, 400);
+      }
+    }
+
     const result = await fetchProviderModels(c.env, c.req.param("id"));
     return c.json(result);
+  });
+
+  app.get("/providers/:id/models/cached", async (c) => {
+    try {
+      return c.json(await getCachedProviderModelsResponse(c.env, c.req.param("id")));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to load cached models" }, 404);
+    }
+  });
+
+  app.post("/providers/:id/models", async (c) => {
+    const body = await c.req.json<{ modelId?: string }>();
+    const modelId = body.modelId?.trim();
+    if (!modelId) {
+      return c.json({ error: "modelId is required" }, 400);
+    }
+
+    try {
+      await addManualProviderModel(c.env, c.req.param("id"), modelId);
+      return c.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to add model";
+      const status = message === "Provider not found" ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
+  });
+
+  app.patch("/providers/:id/models/:modelId", async (c) => {
+    const body = await c.req.json<{ modelId?: string }>();
+    const newModelId = body.modelId?.trim();
+    if (!newModelId) {
+      return c.json({ error: "modelId is required" }, 400);
+    }
+
+    try {
+      const result = await renameProviderModel(c.env, c.req.param("id"), c.req.param("modelId"), newModelId);
+      return c.json({
+        ok: true,
+        newModelId: result.newModelId,
+        routesUpdated: result.routesUpdated,
+        message: formatModelRenamedMessage(c.req.param("modelId"), result.newModelId, result.routesUpdated)
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to rename model";
+      const status = message === "Model not found" ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
+  });
+
+  app.delete("/providers/:id/models/:modelId", async (c) => {
+    try {
+      await deleteProviderModel(c.env, c.req.param("id"), c.req.param("modelId"));
+      return c.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to delete model";
+      const status = message === "Model not found" ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
   });
 
   app.post("/providers/:id/models/sync", async (c) => {
@@ -202,10 +286,11 @@ export function createAdminApi(): Hono<AdminApp> {
     const routes = await c.env.DB.prepare("SELECT id, name, created_at, updated_at FROM routes ORDER BY name").all<RouteRow>();
     const entries = await c.env.DB.prepare(
       `SELECT
-        re.id, re.route_id, re.provider_id, p.name AS provider_name, p.base_url,
+        re.id, re.route_id, re.provider_id, re.provider_key_id, pk.name AS provider_key_name, p.name AS provider_name, p.base_url,
         re.upstream_model, re.position
       FROM route_entries re
       JOIN providers p ON p.id = re.provider_id
+      LEFT JOIN provider_keys pk ON pk.id = re.provider_key_id
       ORDER BY re.route_id, re.position`
     ).all<RouteEntryRow>();
 
@@ -213,25 +298,33 @@ export function createAdminApi(): Hono<AdminApp> {
   });
 
   app.post("/routes", async (c) => {
-    const body = await c.req.json<{ name?: string; entries?: Array<{ providerId: string; upstreamModel: string }> }>();
+    const body = await c.req.json<{ name?: string; entries?: Array<{ providerId: string; providerKeyId?: string; upstreamModel: string }> }>();
     if (!body.name) {
       return c.json({ error: "name is required" }, 400);
     }
 
-    const id = makeId("route");
-    await saveRoute(c.env, id, body.name.trim(), body.entries ?? []);
-    return c.json({ id });
+    try {
+      const id = makeId("route");
+      await saveRoute(c.env, id, body.name.trim(), body.entries ?? []);
+      return c.json({ id });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to save route" }, 400);
+    }
   });
 
   app.put("/routes/:id", async (c) => {
-    const body = await c.req.json<{ name?: string; entries?: Array<{ providerId: string; upstreamModel: string }> }>();
+    const body = await c.req.json<{ name?: string; entries?: Array<{ providerId: string; providerKeyId?: string; upstreamModel: string }> }>();
     const id = c.req.param("id");
     if (!body.name) {
       return c.json({ error: "name is required" }, 400);
     }
 
-    await saveRoute(c.env, id, body.name.trim(), body.entries ?? []);
-    return c.json({ id });
+    try {
+      await saveRoute(c.env, id, body.name.trim(), body.entries ?? []);
+      return c.json({ id });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to save route" }, 400);
+    }
   });
 
   app.delete("/routes/:id", async (c) => {
@@ -276,7 +369,7 @@ export function createAdminApi(): Hono<AdminApp> {
   });
 
   app.get("/usage", async (c) => {
-    const limit = Math.min(Number(c.req.query("limit") ?? 100), 500);
+    const limit = readBoundedLimit(c.req.query("limit"), 100, 500);
     const rows = await c.env.DB.prepare(
       `SELECT
         u.*, ck.name AS client_key_name, p.name AS provider_name
@@ -300,6 +393,91 @@ export function createAdminApi(): Hono<AdminApp> {
     return c.json({ rows: rows.results ?? [], summary });
   });
 
+  app.get("/stats", async (c) => {
+    const window = parseStatsWindow(c.req.query("window"));
+    const cutoff = statsWindowCutoff(window);
+    const filter = cutoff ? "WHERE u.created_at >= ?" : "";
+
+    const summaryStatement = c.env.DB.prepare(
+      `SELECT
+        COUNT(*) AS requests,
+        SUM(COALESCE(total_tokens, 0)) AS total_tokens,
+        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors,
+        AVG(latency_ms) AS avg_latency_ms
+      FROM usage_log u
+      ${filter}`
+    );
+    const summary = await bindCutoff(summaryStatement, cutoff).first<StatsSummaryRow>();
+
+    const providers = await statsBreakdown(
+      c.env,
+      `SELECT
+        COALESCE(u.provider_id, 'unknown') AS id,
+        COALESCE(p.name, 'Unknown provider') AS name,
+        COUNT(*) AS requests,
+        SUM(COALESCE(u.total_tokens, 0)) AS total_tokens,
+        SUM(CASE WHEN u.status >= 400 THEN 1 ELSE 0 END) AS errors,
+        AVG(u.latency_ms) AS avg_latency_ms
+      FROM usage_log u
+      LEFT JOIN providers p ON p.id = u.provider_id
+      ${filter}
+      GROUP BY u.provider_id, p.name
+      ORDER BY requests DESC, name`,
+      cutoff
+    );
+
+    const routes = await statsBreakdown(
+      c.env,
+      `SELECT
+        u.route_name AS id,
+        u.route_name AS name,
+        COUNT(*) AS requests,
+        SUM(COALESCE(u.total_tokens, 0)) AS total_tokens,
+        SUM(CASE WHEN u.status >= 400 THEN 1 ELSE 0 END) AS errors,
+        AVG(u.latency_ms) AS avg_latency_ms
+      FROM usage_log u
+      ${filter}
+      GROUP BY u.route_name
+      ORDER BY requests DESC, name`,
+      cutoff
+    );
+
+    const clientKeys = await statsBreakdown(
+      c.env,
+      `SELECT
+        COALESCE(u.client_key_id, 'unknown') AS id,
+        COALESCE(ck.name, 'Unknown app') AS name,
+        COUNT(*) AS requests,
+        SUM(COALESCE(u.total_tokens, 0)) AS total_tokens,
+        SUM(CASE WHEN u.status >= 400 THEN 1 ELSE 0 END) AS errors,
+        AVG(u.latency_ms) AS avg_latency_ms
+      FROM usage_log u
+      LEFT JOIN client_keys ck ON ck.id = u.client_key_id
+      ${filter}
+      GROUP BY u.client_key_id, ck.name
+      ORDER BY requests DESC, name`,
+      cutoff
+    );
+
+    const requests = summary?.requests ?? 0;
+    const errors = summary?.errors ?? 0;
+    return c.json({
+      window,
+      summary: {
+        requests,
+        totalTokens: summary?.total_tokens ?? 0,
+        errors,
+        avgLatencyMs: Math.round(summary?.avg_latency_ms ?? 0),
+        successRate: requests > 0 ? (requests - errors) / requests : 0
+      },
+      breakdowns: {
+        providers,
+        routes,
+        clientKeys
+      }
+    });
+  });
+
   app.get("/cooldowns", async (c) => {
     const listed = await c.env.COOLDOWNS.list({ prefix: "cooldown:" });
     return c.json({ cooldowns: listed.keys });
@@ -308,12 +486,46 @@ export function createAdminApi(): Hono<AdminApp> {
   return app;
 }
 
+type StatsSummaryRow = {
+  requests: number;
+  total_tokens: number | null;
+  errors: number;
+  avg_latency_ms: number | null;
+};
+
+type StatsBreakdownRow = StatsSummaryRow & {
+  id: string | null;
+  name: string | null;
+};
+
+async function statsBreakdown(env: Env, query: string, cutoff: string | null) {
+  const rows = await bindCutoff(env.DB.prepare(query), cutoff).all<StatsBreakdownRow>();
+  return (rows.results ?? []).map((row) => ({
+    id: row.id ?? "unknown",
+    name: row.name ?? "Unknown",
+    requests: row.requests,
+    totalTokens: row.total_tokens ?? 0,
+    errors: row.errors,
+    avgLatencyMs: Math.round(row.avg_latency_ms ?? 0),
+    successRate: row.requests > 0 ? (row.requests - row.errors) / row.requests : 0
+  }));
+}
+
+function bindCutoff(statement: D1PreparedStatement, cutoff: string | null): D1PreparedStatement {
+  return cutoff ? statement.bind(cutoff) : statement;
+}
+
 async function saveRoute(
   env: Env,
   id: string,
   name: string,
-  entries: Array<{ providerId: string; upstreamModel: string }>
+  entries: RouteEntryInput[]
 ): Promise<void> {
+  const validationError = await validateRouteEntriesForSave(env, entries);
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO routes (id, name)
@@ -322,8 +534,25 @@ async function saveRoute(
     ).bind(id, name),
     env.DB.prepare("DELETE FROM route_entries WHERE route_id = ?").bind(id),
     ...entries.map((entry, index) =>
-      env.DB.prepare("INSERT INTO route_entries (id, route_id, provider_id, upstream_model, position) VALUES (?, ?, ?, ?, ?)")
-        .bind(makeId("rent"), id, entry.providerId, entry.upstreamModel, index)
+      env.DB.prepare("INSERT INTO route_entries (id, route_id, provider_id, provider_key_id, upstream_model, position) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(makeId("rent"), id, entry.providerId, entry.providerKeyId?.trim() || null, entry.upstreamModel, index)
     )
   ]);
+}
+
+async function validateRouteEntriesForSave(env: Env, entries: RouteEntryInput[]): Promise<string | null> {
+  const pinnedIds = entries.map((entry) => entry.providerKeyId?.trim()).filter((value): value is string => Boolean(value));
+  if (pinnedIds.length === 0) {
+    return null;
+  }
+
+  const placeholders = pinnedIds.map(() => "?").join(", ");
+  const keys = await env.DB.prepare(
+    `SELECT id, provider_id, enabled FROM provider_keys WHERE id IN (${placeholders})`
+  )
+    .bind(...pinnedIds)
+    .all<{ id: string; provider_id: string; enabled: number }>();
+
+  const keysById = new Map((keys.results ?? []).map((key) => [key.id, key]));
+  return validatePinnedProviderKeys(entries, keysById);
 }
