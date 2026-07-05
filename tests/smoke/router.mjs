@@ -6,6 +6,8 @@
  *   npm run test:smoke:router
  */
 
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { pathToFileURL } from "node:url";
 import { createSmokeRunner, readJson } from "./helpers.mjs";
 
@@ -210,4 +212,4 @@ export async function runRouterSmoke() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await runRouterSmoke();
-}
+};
