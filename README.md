@@ -4,11 +4,13 @@ OpenAI-compatible LLM router for Cloudflare Workers. It lets your apps call one 
 
 ## Features
 
-- OpenAI-compatible `POST /v1/chat/completions`
+- OpenAI-compatible `POST /v1/chat/completions` and `GET /v1/models`
 - Streaming response pass-through
 - Provider fallback by virtual model route, for example `default`, `fast`, or `smart`
+- Adaptive fallback ordering based on recent provider health
 - Multiple API keys per provider with basic rotation
 - KV cooldowns for rate-limited or failing provider keys
+- Per-client-key RPM and daily token quotas enforced at the edge
 - D1-backed admin UI for providers, keys, routes, client keys, and usage
 - Provider API keys encrypted in D1 using `ENCRYPTION_KEY`
 - Client app keys stored only as SHA-256 hashes
@@ -49,45 +51,249 @@ npx wrangler dev
 
 Open the local Worker URL and enter `ADMIN_TOKEN` in the admin UI. The token is stored in **session storage** for the current browser tab only (it is cleared when you close the tab).
 
-## Cloudflare Setup
+## Deploy to Cloudflare
 
-Create a D1 database:
+This section walks through deploying from scratch: Cloudflare account, creating the resources the Worker needs, then running the deploy commands.
+
+### What you'll need
+
+- [Node.js](https://nodejs.org/) 18 or later
+- A Cloudflare account (the free tier is enough to get started)
+- Git (optional, if cloning the repo)
+- A terminal — commands below use PowerShell; equivalent bash notes are included where syntax differs
+
+### Step 1: Create a Cloudflare account
+
+1. Go to [https://dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up).
+2. Enter your email and password, then verify your email address.
+3. After sign-in you land on the Cloudflare dashboard. You do **not** need to add a website or change nameservers for this project — Workers runs on Cloudflare's `workers.dev` subdomain by default.
+
+No other dashboard setup is required before deploy. Wrangler creates the Worker, D1 database, and KV namespace from your terminal. You can confirm resources later under **Workers & Pages** in the sidebar.
+
+### Step 2: Clone the repo and install dependencies
+
+```powershell
+git clone https://github.com/ChandreshRao/llm-router.git
+cd llm-router
+npm install
+```
+
+If you already have the repo locally, `cd` into it and run `npm install`.
+
+### Step 3: Log in to Cloudflare from Wrangler
+
+Wrangler is the Cloudflare CLI (included as a dev dependency). Log in once per machine:
+
+```powershell
+npx wrangler login
+```
+
+This opens a browser window. Choose your Cloudflare account and approve access. When it succeeds, the terminal prints a confirmation.
+
+To confirm you are logged in:
+
+```powershell
+npx wrangler whoami
+```
+
+You should see your account email and account ID.
+
+### Step 4: Create a D1 database
+
+D1 stores providers, routes, client keys, and usage logs.
 
 ```powershell
 npx wrangler d1 create llm-router
 ```
 
-Create a KV namespace:
+Wrangler prints JSON like:
+
+```json
+{
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "llm-router",
+      "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    }
+  ]
+}
+```
+
+Copy the `database_id` value — you need it in the next step.
+
+You can also find this later in the dashboard: **Storage & databases → D1 SQL Database → llm-router**.
+
+### Step 5: Create a KV namespace
+
+KV stores provider-key cooldowns and client-key quota counters.
 
 ```powershell
 npx wrangler kv namespace create COOLDOWNS
 ```
 
-Update `wrangler.jsonc`:
+Wrangler prints JSON like:
 
-- Replace `replace-with-d1-database-id` with the D1 `database_id`
-- Replace `replace-with-kv-namespace-id` with the KV namespace `id`
+```json
+{
+  "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+  "title": "COOLDOWNS"
+}
+```
 
-Set Worker secrets:
+Copy the `id` value.
+
+You can also find this later in the dashboard: **Storage & databases → Workers KV → COOLDOWNS**.
+
+### Step 6: Update `wrangler.jsonc`
+
+Open `wrangler.jsonc` and replace the placeholder IDs with the values from steps 4 and 5:
+
+```jsonc
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "llm-router",
+    "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  // from Step 4
+    "migrations_dir": "migrations"
+  }
+],
+"kv_namespaces": [
+  {
+    "binding": "COOLDOWNS",
+    "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"  // from Step 5
+  }
+]
+```
+
+Commit this change if you deploy from CI; otherwise keep it local.
+
+### Step 7: Generate secret values
+
+The Worker needs two secrets. Generate strong random strings before the next step.
+
+PowerShell:
+
+```powershell
+# ADMIN_TOKEN — used to sign in to the admin UI
+-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 48 | ForEach-Object {[char]$_})
+
+# ENCRYPTION_KEY — encrypts provider API keys in D1 (min ~32 chars)
+-join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
+```
+
+macOS / Linux:
+
+```bash
+openssl rand -hex 24   # ADMIN_TOKEN
+openssl rand -hex 32   # ENCRYPTION_KEY
+```
+
+Save both values somewhere safe (a password manager). You will enter them in the next step; they are not stored in the repo.
+
+**Important:** If you change `ENCRYPTION_KEY` after adding provider keys, existing encrypted keys cannot be decrypted.
+
+### Step 8: Set Worker secrets
+
+Run each command and paste the value when prompted. Input is hidden.
 
 ```powershell
 npx wrangler secret put ADMIN_TOKEN
 npx wrangler secret put ENCRYPTION_KEY
 ```
 
-Use a strong random value for `ENCRYPTION_KEY`. If you change it after storing provider keys, existing encrypted provider keys cannot be decrypted.
+Secrets are stored on Cloudflare, not in `wrangler.jsonc`. To update a secret later, run the same command again.
 
-Apply remote migrations:
+### Step 9: Apply database migrations (remote)
+
+This creates tables and seeds default providers and the `default` route in your production D1 database:
 
 ```powershell
 npm run db:migrate
 ```
 
-Deploy:
+When prompted to apply migrations, confirm with `y`.
+
+You only need to run this again when new migration files are added to the repo.
+
+### Step 10: Deploy the Worker
 
 ```powershell
 npm run deploy
 ```
+
+This builds the admin UI and deploys the Worker. On success, Wrangler prints a URL like:
+
+```text
+Published llm-router (X.XX sec)
+  https://llm-router.<your-subdomain>.workers.dev
+```
+
+That URL is your router endpoint. The admin UI is at the same URL (root path).
+
+### Step 11: Open the admin UI and configure the router
+
+1. Open `https://llm-router.<your-subdomain>.workers.dev` in a browser.
+2. Sign in with the `ADMIN_TOKEN` you set in Step 8.
+3. Follow [Configure Providers](#configure-providers) below:
+   - Add provider API keys
+   - Set up routes and fallback order
+   - Generate a client key for each app
+
+### Step 12: Test the deployment
+
+Replace the URL and client key with your values:
+
+```powershell
+$env:ROUTER_BASE_URL = "https://llm-router.<your-subdomain>.workers.dev"
+$env:ROUTER_API_KEY = "sk-router-your-generated-client-key"
+npm run test:smoke
+```
+
+Or call the API directly:
+
+```powershell
+curl https://llm-router.<your-subdomain>.workers.dev/health
+```
+
+### Optional: Custom domain
+
+To use your own domain instead of `workers.dev`:
+
+1. In the Cloudflare dashboard, open **Workers & Pages → llm-router → Settings → Domains & Routes**.
+2. Click **Add → Custom domain** and follow the prompts.
+3. If the domain is already on Cloudflare, DNS is configured automatically.
+4. Update your app's `baseURL` to `https://your-domain.com/v1`.
+
+### Deploy checklist
+
+| Step | Action | Done |
+|------|--------|------|
+| 1 | Cloudflare account created | ☐ |
+| 2 | `npm install` | ☐ |
+| 3 | `npx wrangler login` | ☐ |
+| 4 | `npx wrangler d1 create llm-router` | ☐ |
+| 5 | `npx wrangler kv namespace create COOLDOWNS` | ☐ |
+| 6 | Update `database_id` and KV `id` in `wrangler.jsonc` | ☐ |
+| 7 | Generate `ADMIN_TOKEN` and `ENCRYPTION_KEY` | ☐ |
+| 8 | `npx wrangler secret put` for both secrets | ☐ |
+| 9 | `npm run db:migrate` | ☐ |
+| 10 | `npm run deploy` | ☐ |
+| 11 | Configure providers, routes, and client keys in admin UI | ☐ |
+
+### Troubleshooting
+
+**`Authentication error` or `not logged in`** — Run `npx wrangler login` again.
+
+**`database_id` / KV `id` errors on deploy** — Double-check the IDs in `wrangler.jsonc` match the output from `d1 create` and `kv namespace create`.
+
+**Admin UI loads but API calls return 401** — The `ADMIN_TOKEN` in the browser must match the secret set with `wrangler secret put ADMIN_TOKEN`.
+
+**Chat completions return 502** — No provider keys or route entries are configured, or all providers failed. Check the admin UI and the Worker's **Logs** tab under **Workers & Pages → llm-router**.
+
+**Migrations fail on remote** — Ensure Step 6 used the correct `database_id` and Step 9 was run before or after deploy (migrations can run before the first deploy).
+
+**Redeploying after code changes** — Run `npm run deploy` again. Run `npm run db:migrate` only when new files appear in `migrations/`.
 
 ## Configure Providers
 
@@ -106,9 +312,18 @@ In the admin UI:
 2. In **Providers → Model Catalog**, configure OpenRouter mapping per provider and use **Sync from OpenRouter** to populate the local catalog. Use **↻** on the Routes tab to fetch upstream models and add any missing IDs to the catalog. Delete models you do not want; they stay excluded on the next sync. Delete is blocked while a route still references a model.
 3. Create or edit a route, such as `default`.
 4. Add fallback steps in the order you prefer, each with a provider and upstream model name.
-5. Generate a client key for each application.
+5. Generate a client key for each application. Optional RPM and daily token limits can be set per key in the admin UI.
 
 Provider keys are write-only in the UI. Generated client keys are shown once.
+
+## Client Key Quotas
+
+Each client key can optionally enforce:
+
+- **RPM limit** — requests per minute, tracked in KV
+- **Daily token limit** — total tokens per UTC day, updated after each completed request
+
+Leave a limit blank for unlimited usage. When a limit is exceeded, the router returns `429`.
 
 ## Calling From Apps
 
@@ -160,6 +375,8 @@ Default cooldowns are configured in `wrangler.jsonc`:
 - `DEFAULT_COOLDOWN_429_SECONDS`: `300`
 - `DEFAULT_COOLDOWN_5XX_SECONDS`: `60`
 - `UPSTREAM_TIMEOUT_MS`: `60000`
+- `ADAPTIVE_ROUTING_ENABLED`: `true` — reorder fallbacks by recent provider health
+- `ADAPTIVE_ROUTING_WINDOW_HOURS`: `24` — rolling window for health scoring
 
 ## Verification
 

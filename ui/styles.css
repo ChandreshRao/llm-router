@@ -137,6 +137,23 @@ article small {
   overflow-wrap: anywhere;
 }
 
+.client-key-row {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.toolbar.compact {
+  gap: 0.5rem;
+}
+
+.toolbar.wrap {
+  flex-wrap: wrap;
+}
+
+.stack.compact {
+  gap: 0.5rem;
+}
+
 .catalog-list {
   display: grid;
   gap: 0.75rem;
