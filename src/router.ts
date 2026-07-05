@@ -1,3 +1,9 @@
+import {
+  isAdaptiveRoutingEnabled,
+  adaptiveRoutingWindowHours,
+  loadProviderModelHealth,
+  sortCandidatesByHealth
+} from "./adaptive-routing";
 import { decryptSecret } from "./crypto";
 import { type AttemptFailure, readNumber, shouldFallback } from "./router-logic";
 import { logUsage, parseJsonUsage, parseStreamingUsage } from "./usage";
@@ -32,7 +38,11 @@ export async function handleChatCompletions(
   }
   const requestedModel = typeof incomingBody.model === "string" ? incomingBody.model : "default";
   const routeName = await resolveRouteName(env, requestedModel);
-  const candidates = await loadCandidates(env, routeName);
+  let candidates = await loadCandidates(env, routeName);
+  if (isAdaptiveRoutingEnabled(env) && candidates.length > 1) {
+    const healthRows = await loadProviderModelHealth(env, adaptiveRoutingWindowHours(env));
+    candidates = sortCandidatesByHealth(candidates, healthRows);
+  }
   const failures: AttemptFailure[] = [];
 
   if (candidates.length === 0) {
