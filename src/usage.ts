@@ -1,3 +1,4 @@
+import { addClientDailyTokens } from "./client-quotas";
 import { makeId } from "./crypto";
 import type { Env, UsagePayload } from "./types";
 
@@ -23,6 +24,14 @@ export async function logUsage(env: Env, usage: UsagePayload): Promise<void> {
       usage.error ?? null
     )
     .run();
+
+  if (usage.clientKeyId && usage.totalTokens && usage.totalTokens > 0) {
+    try {
+      await addClientDailyTokens(env, usage.clientKeyId, usage.totalTokens);
+    } catch {
+      // Quota debit failure must not suppress the usage audit record.
+    }
+  }
 }
 
 export async function parseJsonUsage(response: Response): Promise<Partial<UsagePayload>> {

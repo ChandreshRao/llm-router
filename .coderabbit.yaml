@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  profile: "chill"        # fewer, higher-signal comments; switch to "assertive" later if desired
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.lock"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/node_modules/**"
+    - "!**/*.generated.*"
+    - "!**/coverage/**"
+
+tone_instructions: >
+  Be concise. Prioritize correctness, security, new dependencies,
+  premature abstraction, and oversized/nested code. Skip formatting
+  and style nits covered by ESLint.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true

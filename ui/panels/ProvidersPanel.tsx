@@ -366,7 +366,19 @@ export function ProvidersPanel({
                 <strong>{provider.name}</strong>
                 <small>{provider.base_url}</small>
                 <span>{provider.key_count} keys</span>
-                <button className="secondary" onClick={() => api.patch(`/admin/providers/${provider.id}`, { enabled: provider.enabled !== 1 }).then(() => onChange("Provider toggled."))}>
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await api.patch(`/admin/providers/${provider.id}`, { enabled: provider.enabled !== 1 });
+                        await onChange("Provider toggled.");
+                      } catch (error) {
+                        await onChange(error instanceof Error ? `Toggle failed: ${error.message}` : "Toggle failed.");
+                      }
+                    })();
+                  }}
+                >
                   {provider.enabled === 1 ? "Disable" : "Enable"}
                 </button>
               </article>
@@ -405,7 +417,19 @@ export function ProvidersPanel({
                 <span>{key.enabled === 1 ? "Enabled" : "Disabled"}</span>
                 <span>{key.last_used_at ? formatDate(key.last_used_at) : "Never"}</span>
                 <span className="row-actions">
-                  <button className="secondary" onClick={() => api.patch(`/admin/provider-keys/${key.id}`, { enabled: key.enabled !== 1 }).then(() => onChange("Provider key toggled."))}>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      void (async () => {
+                        try {
+                          await api.patch(`/admin/provider-keys/${key.id}`, { enabled: key.enabled !== 1 });
+                          await onChange("Provider key toggled.");
+                        } catch (error) {
+                          await onChange(error instanceof Error ? `Toggle failed: ${error.message}` : "Toggle failed.");
+                        }
+                      })();
+                    }}
+                  >
                     {key.enabled === 1 ? "Disable" : "Enable"}
                   </button>
                   <button

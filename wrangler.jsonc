@@ -1,30 +1,32 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "llm-router",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-07-04",
-  "assets": {
-    "directory": "dist/client",
-    "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "llm-router",
-      "database_id": "replace-with-d1-database-id",
-      "migrations_dir": "migrations"
-    }
-  ],
-  "kv_namespaces": [
-    {
-      "binding": "COOLDOWNS",
-      "id": "replace-with-kv-namespace-id"
-    }
-  ],
-  "vars": {
-    "DEFAULT_COOLDOWN_429_SECONDS": "300",
-    "DEFAULT_COOLDOWN_5XX_SECONDS": "60",
-    "UPSTREAM_TIMEOUT_MS": "60000"
-  }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "llm-router",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-04",
+	"assets": {
+		"directory": "dist/client",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "llm-router",
+			"database_id": "PLACEHOLDER_D1_DATABASE_ID",
+			"migrations_dir": "migrations"
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "COOLDOWNS",
+			"id": "PLACEHOLDER_KV_NAMESPACE_ID"
+		}
+	],
+	"vars": {
+		"DEFAULT_COOLDOWN_429_SECONDS": "300",
+		"DEFAULT_COOLDOWN_5XX_SECONDS": "60",
+		"UPSTREAM_TIMEOUT_MS": "60000",
+		"ADAPTIVE_ROUTING_ENABLED": "false",
+		"ADAPTIVE_ROUTING_WINDOW_HOURS": "24"
+	}
 }

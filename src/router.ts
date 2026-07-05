@@ -1,17 +1,14 @@
+import {
+  isAdaptiveRoutingEnabled,
+  adaptiveRoutingWindowHours,
+  loadProviderModelHealth,
+  type RoutableCandidate,
+  sortCandidatesByHealth
+} from "./adaptive-routing";
 import { decryptSecret } from "./crypto";
 import { type AttemptFailure, readNumber, shouldFallback } from "./router-logic";
 import { logUsage, parseJsonUsage, parseStreamingUsage } from "./usage";
 import type { Env, OpenAIChatBody, UsagePayload } from "./types";
-
-type CandidateRow = {
-  provider_id: string;
-  provider_name: string;
-  base_url: string;
-  provider_key_id: string;
-  api_key_ciphertext: string;
-  upstream_model: string;
-  position: number;
-};
 
 type WaitUntilContext = {
   waitUntil(promise: Promise<unknown>): void;
@@ -32,7 +29,15 @@ export async function handleChatCompletions(
   }
   const requestedModel = typeof incomingBody.model === "string" ? incomingBody.model : "default";
   const routeName = await resolveRouteName(env, requestedModel);
-  const candidates = await loadCandidates(env, routeName);
+  let candidates = await loadCandidates(env, routeName);
+  if (isAdaptiveRoutingEnabled(env) && candidates.length > 1) {
+    try {
+      const healthRows = await loadProviderModelHealth(env, adaptiveRoutingWindowHours(env));
+      candidates = sortCandidatesByHealth(candidates, healthRows);
+    } catch {
+      // Adaptive routing is optional; fall back to route-entry order on lookup failure.
+    }
+  }
   const failures: AttemptFailure[] = [];
 
   if (candidates.length === 0) {
@@ -174,7 +179,7 @@ async function resolveRouteName(env: Env, requestedModel: string): Promise<strin
   return defaultRoute?.name ?? requestedModel;
 }
 
-async function loadCandidates(env: Env, routeName: string): Promise<CandidateRow[]> {
+async function loadCandidates(env: Env, routeName: string): Promise<RoutableCandidate[]> {
   const result = await env.DB.prepare(
     `SELECT
       p.id AS provider_id,
@@ -193,7 +198,7 @@ async function loadCandidates(env: Env, routeName: string): Promise<CandidateRow
     ORDER BY re.position ASC, COALESCE(pk.last_used_at, '') ASC, pk.created_at ASC`
   )
     .bind(routeName)
-    .all<CandidateRow>();
+    .all<RoutableCandidate>();
 
   return result.results ?? [];
 }
