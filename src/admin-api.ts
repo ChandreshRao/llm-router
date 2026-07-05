@@ -346,7 +346,8 @@ export function createAdminApi(): Hono<AdminApp> {
       rpmLimit?: number | null;
       dailyTokenLimit?: number | null;
     }>();
-    if (!body.name) {
+    const name = normalizeClientKeyName(body.name);
+    if (!name) {
       return c.json({ error: "name is required" }, 400);
     }
 
@@ -358,7 +359,7 @@ export function createAdminApi(): Hono<AdminApp> {
     )
       .bind(
         id,
-        body.name.trim(),
+        name,
         keyHash,
         body.enabled === false ? 0 : 1,
         normalizeQuotaLimit(body.rpmLimit),
@@ -381,8 +382,13 @@ export function createAdminApi(): Hono<AdminApp> {
     const values: unknown[] = [];
 
     if (body.name !== undefined) {
+      const name = normalizeClientKeyName(body.name);
+      if (!name) {
+        return c.json({ error: "name is required" }, 400);
+      }
+
       fields.push("name = ?");
-      values.push(body.name.trim());
+      values.push(name);
     }
     if (body.enabled !== undefined) {
       fields.push("enabled = ?");
@@ -565,6 +571,15 @@ function normalizeQuotaLimit(value: number | null | undefined): number | null {
 
   const parsed = Math.trunc(value);
   return parsed > 0 ? parsed : null;
+}
+
+function normalizeClientKeyName(value: string | null | undefined): string | null {
+  if (value == null || typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 async function saveRoute(

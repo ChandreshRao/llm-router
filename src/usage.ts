@@ -3,10 +3,6 @@ import { makeId } from "./crypto";
 import type { Env, UsagePayload } from "./types";
 
 export async function logUsage(env: Env, usage: UsagePayload): Promise<void> {
-  if (usage.clientKeyId && usage.totalTokens && usage.totalTokens > 0) {
-    await addClientDailyTokens(env, usage.clientKeyId, usage.totalTokens);
-  }
-
   await env.DB.prepare(
     `INSERT INTO usage_log (
       id, client_key_id, route_name, provider_id, provider_key_id, upstream_model,
@@ -28,6 +24,14 @@ export async function logUsage(env: Env, usage: UsagePayload): Promise<void> {
       usage.error ?? null
     )
     .run();
+
+  if (usage.clientKeyId && usage.totalTokens && usage.totalTokens > 0) {
+    try {
+      await addClientDailyTokens(env, usage.clientKeyId, usage.totalTokens);
+    } catch {
+      // Quota debit failure must not suppress the usage audit record.
+    }
+  }
 }
 
 export async function parseJsonUsage(response: Response): Promise<Partial<UsagePayload>> {

@@ -138,7 +138,16 @@ function ClientKeyRow({
         </button>
         <button
           className="secondary"
-          onClick={() => api.patch(`/admin/client-keys/${clientKey.id}`, { enabled: clientKey.enabled !== 1 }).then(() => onChange("Client key toggled."))}
+          onClick={() => {
+            void (async () => {
+              try {
+                await api.patch(`/admin/client-keys/${clientKey.id}`, { enabled: clientKey.enabled !== 1 });
+                await onChange("Client key toggled.");
+              } catch (error) {
+                await onChange(error instanceof Error ? `Toggle failed: ${error.message}` : "Toggle failed.");
+              }
+            })();
+          }}
         >
           {clientKey.enabled === 1 ? "Disable" : "Enable"}
         </button>
