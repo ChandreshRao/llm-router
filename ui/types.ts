@@ -35,6 +35,8 @@ export type ClientKey = {
   id: string;
   name: string;
   enabled: number;
+  rpm_limit: number | null;
+  daily_token_limit: number | null;
   created_at: string;
   last_used_at: string | null;
 };

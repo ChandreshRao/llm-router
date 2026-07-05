@@ -12,13 +12,32 @@ app.use(
   cors({
     origin: "*",
     allowHeaders: ["authorization", "content-type", "http-referer", "x-title"],
-    allowMethods: ["POST", "OPTIONS"]
+    allowMethods: ["GET", "POST", "OPTIONS"]
   })
 );
 
 app.get("/health", (c) => c.json({ ok: true }));
 
 app.route("/admin", createAdminApi());
+
+app.get("/v1/models", async (c) => {
+  const authResponse = await authenticateClient(c);
+  if (authResponse) {
+    return authResponse;
+  }
+
+  const routes = await c.env.DB.prepare("SELECT name FROM routes ORDER BY name").all<{ name: string }>();
+  const created = Math.floor(Date.now() / 1000);
+  return c.json({
+    object: "list",
+    data: (routes.results ?? []).map((route) => ({
+      id: route.name,
+      object: "model",
+      created,
+      owned_by: "llm-router"
+    }))
+  });
+});
 
 app.post("/v1/chat/completions", async (c) => {
   const authResponse = await authenticateClient(c);

@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
+import { consumeClientQuotas } from "./client-quotas";
 import { constantTimeEqual, sha256Hex } from "./crypto";
 import type { ClientKeyRow, Env, Variables } from "./types";
 
@@ -21,13 +22,18 @@ export async function authenticateClient(c: Context<{ Bindings: Env; Variables: 
 
   const keyHash = await sha256Hex(token);
   const row = await c.env.DB.prepare(
-    "SELECT id, name, key_hash, enabled, created_at, last_used_at FROM client_keys WHERE key_hash = ?"
+    "SELECT id, name, key_hash, enabled, rpm_limit, daily_token_limit, created_at, last_used_at FROM client_keys WHERE key_hash = ?"
   )
     .bind(keyHash)
     .first<ClientKeyRow>();
 
   if (!row || row.enabled !== 1) {
     return c.json({ error: "Invalid API key" }, 401);
+  }
+
+  const quotaCheck = await consumeClientQuotas(c.env, row);
+  if (!quotaCheck.ok) {
+    return c.json({ error: quotaCheck.error }, quotaCheck.status);
   }
 
   c.set("clientKeyId", row.id);

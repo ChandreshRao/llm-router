@@ -334,32 +334,81 @@ export function createAdminApi(): Hono<AdminApp> {
 
   app.get("/client-keys", async (c) => {
     const keys = await c.env.DB.prepare(
-      "SELECT id, name, enabled, created_at, last_used_at FROM client_keys ORDER BY created_at DESC"
+      "SELECT id, name, enabled, rpm_limit, daily_token_limit, created_at, last_used_at FROM client_keys ORDER BY created_at DESC"
     ).all<Omit<ClientKeyRow, "key_hash">>();
     return c.json({ keys: keys.results ?? [] });
   });
 
   app.post("/client-keys", async (c) => {
-    const body = await c.req.json<{ name?: string; enabled?: boolean }>();
-    if (!body.name) {
+    const body = await c.req.json<{
+      name?: string;
+      enabled?: boolean;
+      rpmLimit?: number | null;
+      dailyTokenLimit?: number | null;
+    }>();
+    const name = normalizeClientKeyName(body.name);
+    if (!name) {
       return c.json({ error: "name is required" }, 400);
     }
 
     const id = makeId("ckey");
     const secret = makeClientSecret();
     const keyHash = await sha256Hex(secret);
-    await c.env.DB.prepare("INSERT INTO client_keys (id, name, key_hash, enabled) VALUES (?, ?, ?, ?)")
-      .bind(id, body.name.trim(), keyHash, body.enabled === false ? 0 : 1)
+    await c.env.DB.prepare(
+      "INSERT INTO client_keys (id, name, key_hash, enabled, rpm_limit, daily_token_limit) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+      .bind(
+        id,
+        name,
+        keyHash,
+        body.enabled === false ? 0 : 1,
+        normalizeQuotaLimit(body.rpmLimit),
+        normalizeQuotaLimit(body.dailyTokenLimit)
+      )
       .run();
 
     return c.json({ id, secret });
   });
 
   app.patch("/client-keys/:id", async (c) => {
-    const body = await c.req.json<{ name?: string; enabled?: boolean }>();
-    await c.env.DB.prepare("UPDATE client_keys SET name = COALESCE(?, name), enabled = COALESCE(?, enabled) WHERE id = ?")
-      .bind(body.name?.trim() ?? null, body.enabled === undefined ? null : body.enabled ? 1 : 0, c.req.param("id"))
-      .run();
+    const body = await c.req.json<{
+      name?: string;
+      enabled?: boolean;
+      rpmLimit?: number | null;
+      dailyTokenLimit?: number | null;
+    }>();
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+
+    if (body.name !== undefined) {
+      const name = normalizeClientKeyName(body.name);
+      if (!name) {
+        return c.json({ error: "name is required" }, 400);
+      }
+
+      fields.push("name = ?");
+      values.push(name);
+    }
+    if (body.enabled !== undefined) {
+      fields.push("enabled = ?");
+      values.push(body.enabled ? 1 : 0);
+    }
+    if (body.rpmLimit !== undefined) {
+      fields.push("rpm_limit = ?");
+      values.push(normalizeQuotaLimit(body.rpmLimit));
+    }
+    if (body.dailyTokenLimit !== undefined) {
+      fields.push("daily_token_limit = ?");
+      values.push(normalizeQuotaLimit(body.dailyTokenLimit));
+    }
+
+    if (fields.length === 0) {
+      return c.json({ ok: true });
+    }
+
+    values.push(c.req.param("id"));
+    await c.env.DB.prepare(`UPDATE client_keys SET ${fields.join(", ")} WHERE id = ?`).bind(...values).run();
     return c.json({ ok: true });
   });
 
@@ -513,6 +562,24 @@ async function statsBreakdown(env: Env, query: string, cutoff: string | null) {
 
 function bindCutoff(statement: D1PreparedStatement, cutoff: string | null): D1PreparedStatement {
   return cutoff ? statement.bind(cutoff) : statement;
+}
+
+function normalizeQuotaLimit(value: number | null | undefined): number | null {
+  if (value == null) {
+    return null;
+  }
+
+  const parsed = Math.trunc(value);
+  return parsed > 0 ? parsed : null;
+}
+
+function normalizeClientKeyName(value: string | null | undefined): string | null {
+  if (value == null || typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 async function saveRoute(
