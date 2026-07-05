@@ -68,7 +68,7 @@ This section walks through deploying from scratch: Cloudflare account, creating 
 2. Enter your email and password, then verify your email address.
 3. After sign-in you land on the Cloudflare dashboard. You do **not** need to add a website or change nameservers for this project — Workers runs on Cloudflare's `workers.dev` subdomain by default.
 
-No other dashboard setup is required before deploy. Wrangler creates the Worker, D1 database, and KV namespace from your terminal. You can confirm resources later under **Workers & Pages** in the sidebar.
+Wrangler creates the Worker, D1 database, and KV namespace from your terminal. You can confirm resources later under **Workers & Pages** in the sidebar.
 
 ### Step 2: Clone the repo and install dependencies
 
@@ -98,7 +98,38 @@ npx wrangler whoami
 
 You should see your account email and account ID.
 
-### Step 4: Create a D1 database
+### Step 4: Register your `workers.dev` subdomain
+
+Before the first deploy, each Cloudflare account must choose an **account-level** `workers.dev` subdomain. This is a one-time setup.
+
+**CI deploy:** add a `WORKERS_DEV_SUBDOMAIN` variable on the **`dev`** environment (see Step 7). The Deploy workflow runs `scripts/ensure-workers-subdomain.sh`, which:
+
+- Skips registration if your account already has a subdomain
+- Fails if `WORKERS_DEV_SUBDOMAIN` does not match the subdomain already on the account
+- Registers the name via the Cloudflare API when the account has none yet
+- Fails if the requested name is already taken by another Cloudflare account (`workers.dev` names are globally unique)
+
+Wrangler itself cannot register a subdomain in non-interactive mode.
+
+**Manual setup** (local deploy only, or if you prefer the dashboard):
+
+1. Open **Workers & Pages** in the [Cloudflare dashboard](https://dash.cloudflare.com/?to=/:account/workers-and-pages), or go directly to [**workers/subdomain**](https://dash.cloudflare.com/?to=/:account/workers/subdomain).
+2. Pick a subdomain for your account (for example `kyuubinaruto11` or `my-handle`). This is **not** the Worker name — it is shared by every Worker on your account.
+3. Save.
+
+After deploy, this project's Worker URL is:
+
+```text
+https://llm-router.<your-account-subdomain>.workers.dev
+```
+
+The first label (`llm-router`) comes from the `"name"` field in `wrangler.jsonc`. The middle label is the account subdomain you choose here.
+
+**Do not use `llm-router` as your account subdomain** unless you want the redundant URL `https://llm-router.llm-router.workers.dev`. Pick a personal or org handle instead.
+
+Alternatively, run `npm run deploy` once in an interactive terminal and answer **yes** when Wrangler asks to register a subdomain.
+
+### Step 5: Create a D1 database
 
 D1 stores providers, routes, client keys, and usage logs.
 
@@ -124,7 +155,7 @@ Copy the `database_id` value — you need it in the next step.
 
 You can also find this later in the dashboard: **Storage & databases → D1 SQL Database → llm-router**.
 
-### Step 5: Create a KV namespace
+### Step 6: Create a KV namespace
 
 KV stores provider-key cooldowns and client-key quota counters.
 
@@ -145,7 +176,7 @@ Copy the `id` value.
 
 You can also find this later in the dashboard: **Storage & databases → Workers KV → COOLDOWNS**.
 
-### Step 6: Configure GitHub for CI deploy (recommended)
+### Step 7: Configure GitHub for CI deploy (recommended)
 
 `wrangler.jsonc` in the repo uses placeholder IDs so forks do not point at your Cloudflare resources. For deploys from GitHub Actions, add these in the **`dev` environment** (**Settings → Environments → dev**). You can create additional environments in GitHub (for example `staging` or `production`) with their own secrets and variables; change the `environment:` value in `.github/workflows/deploy.yml` to target a different one.
 
@@ -173,8 +204,9 @@ You can also find this later in the dashboard: **Storage & databases → Workers
 | Name | Value |
 |------|--------|
 | `CLOUDFLARE_ACCOUNT_ID` | From `npx wrangler whoami` or the Cloudflare dashboard |
-| `D1_DATABASE_ID` | `database_id` from Step 4 |
-| `KV_NAMESPACE_ID` | `id` from Step 5 |
+| `WORKERS_DEV_SUBDOMAIN` | Globally unique account `workers.dev` label (for example `kyuubinaruto11`; not `llm-router`). Required for first CI deploy unless you already registered a subdomain in the dashboard. |
+| `D1_DATABASE_ID` | `database_id` from Step 5 |
+| `KV_NAMESPACE_ID` | `id` from Step 6 |
 
 Add the secret and variables on the **`dev`** environment (not repository-wide Actions settings).
 
@@ -184,7 +216,7 @@ Worker runtime config (timeouts, cooldowns, feature flags) stays in the committe
 
 #### Deploy via GitHub Actions
 
-After Steps 7–8 (Worker secrets) are done, open **Actions → Deploy → Run workflow** on the `main` branch. The workflow builds the UI, injects your resource IDs, applies pending D1 migrations, and deploys the Worker.
+After Steps 8–9 (Worker secrets) are done, open **Actions → Deploy → Run workflow** on the `main` branch. The workflow builds the UI, injects your resource IDs, applies pending D1 migrations, and deploys the Worker.
 
 Redeploy after code changes the same way. Run it again when new migration files land in `migrations/`.
 
@@ -193,13 +225,13 @@ Redeploy after code changes the same way. Run it again when new migration files 
 If you prefer deploying from your machine instead of GitHub Actions, replace the placeholders in `wrangler.jsonc` locally (do not commit real IDs to a public repo):
 
 ```jsonc
-"database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  // from Step 4
-"id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"                  // from Step 5
+"database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  // from Step 5
+"id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"                  // from Step 6
 ```
 
-Then follow Steps 7–10 below with `npm run deploy`.
+Then follow Steps 8–11 below with `npm run deploy`.
 
-### Step 7: Generate secret values
+### Step 8: Generate secret values
 
 The Worker needs two secrets. Generate strong random strings before the next step.
 
@@ -226,7 +258,7 @@ Save both values somewhere safe (a password manager). You will enter them in the
 
 **Important:** If you change `ENCRYPTION_KEY` after adding provider keys, existing encrypted keys cannot be decrypted.
 
-### Step 8: Set Worker secrets
+### Step 9: Set Worker secrets
 
 Run each command and paste the value when prompted. Input is hidden.
 
@@ -237,7 +269,7 @@ npx wrangler secret put ENCRYPTION_KEY
 
 Secrets are stored on Cloudflare, not in `wrangler.jsonc`. To update a secret later, run the same command again.
 
-### Step 9: Apply database migrations (remote)
+### Step 10: Apply database migrations (remote)
 
 If you deploy via **GitHub Actions**, the Deploy workflow runs migrations automatically — skip this step unless you are deploying locally.
 
@@ -251,9 +283,9 @@ When prompted to apply migrations, confirm with `y`.
 
 You only need to run this again when new migration files are added to the repo.
 
-### Step 10: Deploy the Worker
+### Step 11: Deploy the Worker
 
-**GitHub Actions:** **Actions → Deploy → Run workflow** (see Step 6).
+**GitHub Actions:** **Actions → Deploy → Run workflow** (see Step 7).
 
 **Local deploy:**
 
@@ -270,16 +302,16 @@ Published llm-router (X.XX sec)
 
 That URL is your router endpoint. The admin UI is at the same URL (root path).
 
-### Step 11: Open the admin UI and configure the router
+### Step 12: Open the admin UI and configure the router
 
 1. Open `https://llm-router.<your-subdomain>.workers.dev` in a browser.
-2. Sign in with the `ADMIN_TOKEN` you set in Step 8.
+2. Sign in with the `ADMIN_TOKEN` you set in Step 9.
 3. Follow [Configure Providers](#configure-providers) below:
    - Add provider API keys
    - Set up routes and fallback order
    - Generate a client key for each app
 
-### Step 12: Test the deployment
+### Step 13: Test the deployment
 
 Replace the URL and client key with your values:
 
@@ -311,16 +343,21 @@ To use your own domain instead of `workers.dev`:
 | 1 | Cloudflare account created | ☐ |
 | 2 | `npm install` | ☐ |
 | 3 | `npx wrangler login` | ☐ |
-| 4 | `npx wrangler d1 create llm-router` | ☐ |
-| 5 | `npx wrangler kv namespace create COOLDOWNS` | ☐ |
-| 6 | Add GitHub secret + variables (CI deploy) or patch `wrangler.jsonc` locally | ☐ |
-| 7 | Generate `ADMIN_TOKEN` and `ENCRYPTION_KEY` | ☐ |
-| 8 | `npx wrangler secret put` for both secrets | ☐ |
-| 9 | `npm run db:migrate` (local deploy only) | ☐ |
-| 10 | Run **Deploy** workflow or `npm run deploy` | ☐ |
-| 11 | Configure providers, routes, and client keys in admin UI | ☐ |
+| 4 | Set `WORKERS_DEV_SUBDOMAIN` (CI) or register subdomain in dashboard | ☐ |
+| 5 | `npx wrangler d1 create llm-router` | ☐ |
+| 6 | `npx wrangler kv namespace create COOLDOWNS` | ☐ |
+| 7 | Add GitHub secret + variables (CI deploy) or patch `wrangler.jsonc` locally | ☐ |
+| 8 | Generate `ADMIN_TOKEN` and `ENCRYPTION_KEY` | ☐ |
+| 9 | `npx wrangler secret put` for both secrets | ☐ |
+| 10 | `npm run db:migrate` (local deploy only) | ☐ |
+| 11 | Run **Deploy** workflow or `npm run deploy` | ☐ |
+| 12 | Configure providers, routes, and client keys in admin UI | ☐ |
 
 ### Troubleshooting
+
+**`You need to register a workers.dev subdomain before publishing`** — For CI, set `WORKERS_DEV_SUBDOMAIN` on the **`dev`** environment and re-run Deploy. For local deploy, complete [Step 4](#step-4-register-your-workersdev-subdomain) in the dashboard or run `npm run deploy` interactively once.
+
+**`WORKERS_DEV_SUBDOMAIN` is not available` or subdomain mismatch** — `workers.dev` names are globally unique. Pick a different handle if yours is taken. If the account already has a subdomain (dashboard or a prior deploy), set `WORKERS_DEV_SUBDOMAIN` to that exact value or remove the variable.
 
 **`Authentication error` or `not logged in`** — Run `npx wrangler login` again.
 
@@ -330,7 +367,7 @@ To use your own domain instead of `workers.dev`:
 
 **Chat completions return 502** — No provider keys or route entries are configured, or all providers failed. Check the admin UI and the Worker's **Logs** tab under **Workers & Pages → llm-router**.
 
-**Migrations fail on remote** — Ensure the **`dev`** environment variable `D1_DATABASE_ID` (or local `wrangler.jsonc`) matches Step 4, and migrations have been applied (Deploy workflow or `npm run db:migrate`).
+**Migrations fail on remote** — Ensure the **`dev`** environment variable `D1_DATABASE_ID` (or local `wrangler.jsonc`) matches Step 5, and migrations have been applied (Deploy workflow or `npm run db:migrate`).
 
 **Redeploying after code changes** — Run the **Deploy** GitHub Action again, or `npm run deploy` locally. Migrations run automatically in CI; locally, run `npm run db:migrate` only when new files appear in `migrations/`.
 
