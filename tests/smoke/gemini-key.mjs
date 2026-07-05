@@ -3,6 +3,8 @@
  * Skips when GEMINI_API_KEY is not set (safe for CI).
  */
 
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { pathToFileURL } from "node:url";
 import { createSmokeRunner, readJson } from "./helpers.mjs";
 
@@ -54,4 +56,4 @@ export async function runGeminiKeySmoke() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await runGeminiKeySmoke();
-}
+};
