@@ -14,7 +14,7 @@ fail() {
 
 get_existing_subdomain() {
   local response
-  response="$(curl -sS "${api_base}" -H "${auth_header}" -H "Content-Type: application/json" || true)"
+  response="$(curl -sS --connect-timeout 10 --max-time 30 "${api_base}" -H "${auth_header}" -H "Content-Type: application/json" || true)"
   if [ -n "${response}" ] && echo "${response}" | jq -e '.success == true and (.result.subdomain | type == "string") and (.result.subdomain | length > 0)' >/dev/null; then
     echo "${response}" | jq -r '.result.subdomain'
     return 0
@@ -45,7 +45,7 @@ if [ -z "${WORKERS_DEV_SUBDOMAIN:-}" ]; then
   fail "No workers.dev subdomain is registered for this account. Set WORKERS_DEV_SUBDOMAIN on the GitHub dev environment (globally unique; for example your handle), or register manually at https://dash.cloudflare.com/?to=/:account/workers/subdomain"
 fi
 
-put_response="$(curl -sS "${api_base}" \
+put_response="$(curl -sS --connect-timeout 10 --max-time 30 "${api_base}" \
   -X PUT \
   -H "${auth_header}" \
   -H "Content-Type: application/json" \
