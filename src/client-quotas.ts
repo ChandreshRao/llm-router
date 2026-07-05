@@ -2,17 +2,14 @@ import type { ClientKeyRow, Env } from "./types";
 
 export type QuotaCheckResult = { ok: true } | { ok: false; status: 429; error: string };
 
-export async function checkClientQuotas(
+// RPM counters live in KV via read-modify-write; concurrent requests on the same key can
+// lose increments and admit slightly more traffic than the configured limit. Daily token
+// limits are checked here but debited after the response completes, so in-flight bursts
+// can exceed the cap. Strict enforcement would need a single-writer store (e.g. Durable Object).
+export async function consumeClientQuotas(
   env: Env,
   key: Pick<ClientKeyRow, "id" | "rpm_limit" | "daily_token_limit">
 ): Promise<QuotaCheckResult> {
-  if (key.rpm_limit != null && key.rpm_limit > 0) {
-    const rpm = await readRpm(env, key.id);
-    if (rpm >= key.rpm_limit) {
-      return { ok: false, status: 429, error: `Client key RPM limit exceeded (${key.rpm_limit})` };
-    }
-  }
-
   if (key.daily_token_limit != null && key.daily_token_limit > 0) {
     const tokens = await readDailyTokens(env, key.id);
     if (tokens >= key.daily_token_limit) {
@@ -24,14 +21,18 @@ export async function checkClientQuotas(
     }
   }
 
-  return { ok: true };
-}
+  if (key.rpm_limit != null && key.rpm_limit > 0) {
+    const bucket = currentMinuteBucket();
+    const kvKey = rpmKey(key.id, bucket);
+    const current = Number(await env.COOLDOWNS.get(kvKey)) || 0;
+    if (current >= key.rpm_limit) {
+      return { ok: false, status: 429, error: `Client key RPM limit exceeded (${key.rpm_limit})` };
+    }
 
-export async function incrementClientRpm(env: Env, clientKeyId: string): Promise<void> {
-  const bucket = currentMinuteBucket();
-  const key = rpmKey(clientKeyId, bucket);
-  const current = Number(await env.COOLDOWNS.get(key)) || 0;
-  await env.COOLDOWNS.put(key, String(current + 1), { expirationTtl: 120 });
+    await env.COOLDOWNS.put(kvKey, String(current + 1), { expirationTtl: 120 });
+  }
+
+  return { ok: true };
 }
 
 export async function addClientDailyTokens(env: Env, clientKeyId: string, tokens: number): Promise<void> {
@@ -43,11 +44,6 @@ export async function addClientDailyTokens(env: Env, clientKeyId: string, tokens
   const key = dailyTokenKey(clientKeyId, day);
   const current = Number(await env.COOLDOWNS.get(key)) || 0;
   await env.COOLDOWNS.put(key, String(current + tokens), { expirationTtl: 86_400 });
-}
-
-async function readRpm(env: Env, clientKeyId: string): Promise<number> {
-  const value = await env.COOLDOWNS.get(rpmKey(clientKeyId, currentMinuteBucket()));
-  return Number(value) || 0;
 }
 
 async function readDailyTokens(env: Env, clientKeyId: string): Promise<number> {

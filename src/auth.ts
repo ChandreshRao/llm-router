@@ -1,5 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
-import { checkClientQuotas, incrementClientRpm } from "./client-quotas";
+import { consumeClientQuotas } from "./client-quotas";
 import { constantTimeEqual, sha256Hex } from "./crypto";
 import type { ClientKeyRow, Env, Variables } from "./types";
 
@@ -31,12 +31,10 @@ export async function authenticateClient(c: Context<{ Bindings: Env; Variables: 
     return c.json({ error: "Invalid API key" }, 401);
   }
 
-  const quotaCheck = await checkClientQuotas(c.env, row);
+  const quotaCheck = await consumeClientQuotas(c.env, row);
   if (!quotaCheck.ok) {
     return c.json({ error: quotaCheck.error }, quotaCheck.status);
   }
-
-  await incrementClientRpm(c.env, row.id);
 
   c.set("clientKeyId", row.id);
   c.executionCtx.waitUntil(
