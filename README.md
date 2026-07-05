@@ -145,44 +145,77 @@ Copy the `id` value.
 
 You can also find this later in the dashboard: **Storage & databases → Workers KV → COOLDOWNS**.
 
-### Step 6: Update `wrangler.jsonc`
+### Step 6: Configure GitHub for CI deploy (recommended)
 
-Open `wrangler.jsonc` and replace the placeholder IDs with the values from steps 4 and 5:
+`wrangler.jsonc` in the repo uses placeholder IDs so forks do not point at your Cloudflare resources. For deploys from GitHub Actions, add these in the **`dev` environment** (**Settings → Environments → dev**). You can create additional environments in GitHub (for example `staging` or `production`) with their own secrets and variables; change the `environment:` value in `.github/workflows/deploy.yml` to target a different one.
+
+**Secret** (encrypted):
+
+| Name | Value |
+|------|--------|
+| `CLOUDFLARE_API_TOKEN` | Custom API token (see below) |
+
+**Create the API token**
+
+1. Open [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) and click **Create Token → Create Custom Token**.
+2. Name it (for example `LLM-ROUTER-ACCESS-TOKEN`).
+3. Add these **Account** permissions, each set to **Edit**:
+   - **D1**
+   - **Workers Scripts**
+   - **Workers KV Storage**
+4. Continue through the wizard and copy the token value.
+5. In GitHub, add it as the `CLOUDFLARE_API_TOKEN` secret on the **`dev`** environment.
+
+![Cloudflare custom API token permissions for CI deploy](docs/images/cloudflare-api-token.png)
+
+**Variables** (non-secret):
+
+| Name | Value |
+|------|--------|
+| `CLOUDFLARE_ACCOUNT_ID` | From `npx wrangler whoami` or the Cloudflare dashboard |
+| `D1_DATABASE_ID` | `database_id` from Step 4 |
+| `KV_NAMESPACE_ID` | `id` from Step 5 |
+
+Add the secret and variables on the **`dev`** environment (not repository-wide Actions settings).
+
+![GitHub dev environment secrets and variables](docs/images/github-dev-environment.png)
+
+Worker runtime config (timeouts, cooldowns, feature flags) stays in the committed `wrangler.jsonc` `vars` block — you do not need to duplicate those in GitHub.
+
+#### Deploy via GitHub Actions
+
+After Steps 7–8 (Worker secrets) are done, open **Actions → Deploy → Run workflow** on the `main` branch. The workflow builds the UI, injects your resource IDs, applies pending D1 migrations, and deploys the Worker.
+
+Redeploy after code changes the same way. Run it again when new migration files land in `migrations/`.
+
+#### Local deploy (alternative)
+
+If you prefer deploying from your machine instead of GitHub Actions, replace the placeholders in `wrangler.jsonc` locally (do not commit real IDs to a public repo):
 
 ```jsonc
-"d1_databases": [
-  {
-    "binding": "DB",
-    "database_name": "llm-router",
-    "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  // from Step 4
-    "migrations_dir": "migrations"
-  }
-],
-"kv_namespaces": [
-  {
-    "binding": "COOLDOWNS",
-    "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"  // from Step 5
-  }
-]
+"database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  // from Step 4
+"id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"                  // from Step 5
 ```
 
-Commit this change if you deploy from CI; otherwise keep it local.
+Then follow Steps 7–10 below with `npm run deploy`.
 
 ### Step 7: Generate secret values
 
 The Worker needs two secrets. Generate strong random strings before the next step.
 
+Bash (macOS, Linux, Git Bash):
+
+```bash
+./scripts/generate-secrets.sh
+```
+
 PowerShell:
 
 ```powershell
-# ADMIN_TOKEN — used to sign in to the admin UI
--join ((48..57) + (65..90) + (97..122) | Get-Random -Count 48 | ForEach-Object {[char]$_})
-
-# ENCRYPTION_KEY — encrypts provider API keys in D1 (min ~32 chars)
--join ((48..57) + (65..90) + (97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
+./scripts/generate-secrets.ps1
 ```
 
-macOS / Linux:
+Alternatively, with OpenSSL (hex strings):
 
 ```bash
 openssl rand -hex 24   # ADMIN_TOKEN
@@ -206,7 +239,9 @@ Secrets are stored on Cloudflare, not in `wrangler.jsonc`. To update a secret la
 
 ### Step 9: Apply database migrations (remote)
 
-This creates tables and seeds default providers and the `default` route in your production D1 database:
+If you deploy via **GitHub Actions**, the Deploy workflow runs migrations automatically — skip this step unless you are deploying locally.
+
+For a **local deploy**, create tables and seed default providers and the `default` route in your production D1 database:
 
 ```powershell
 npm run db:migrate
@@ -217,6 +252,10 @@ When prompted to apply migrations, confirm with `y`.
 You only need to run this again when new migration files are added to the repo.
 
 ### Step 10: Deploy the Worker
+
+**GitHub Actions:** **Actions → Deploy → Run workflow** (see Step 6).
+
+**Local deploy:**
 
 ```powershell
 npm run deploy
@@ -274,26 +313,26 @@ To use your own domain instead of `workers.dev`:
 | 3 | `npx wrangler login` | ☐ |
 | 4 | `npx wrangler d1 create llm-router` | ☐ |
 | 5 | `npx wrangler kv namespace create COOLDOWNS` | ☐ |
-| 6 | Update `database_id` and KV `id` in `wrangler.jsonc` | ☐ |
+| 6 | Add GitHub secret + variables (CI deploy) or patch `wrangler.jsonc` locally | ☐ |
 | 7 | Generate `ADMIN_TOKEN` and `ENCRYPTION_KEY` | ☐ |
 | 8 | `npx wrangler secret put` for both secrets | ☐ |
-| 9 | `npm run db:migrate` | ☐ |
-| 10 | `npm run deploy` | ☐ |
+| 9 | `npm run db:migrate` (local deploy only) | ☐ |
+| 10 | Run **Deploy** workflow or `npm run deploy` | ☐ |
 | 11 | Configure providers, routes, and client keys in admin UI | ☐ |
 
 ### Troubleshooting
 
 **`Authentication error` or `not logged in`** — Run `npx wrangler login` again.
 
-**`database_id` / KV `id` errors on deploy** — Double-check the IDs in `wrangler.jsonc` match the output from `d1 create` and `kv namespace create`.
+**`database_id` / KV `id` errors on deploy** — For CI, check the **`dev`** environment variables `D1_DATABASE_ID` and `KV_NAMESPACE_ID`. For local deploy, check the IDs in `wrangler.jsonc` match the output from `d1 create` and `kv namespace create`.
 
 **Admin UI loads but API calls return 401** — The `ADMIN_TOKEN` in the browser must match the secret set with `wrangler secret put ADMIN_TOKEN`.
 
 **Chat completions return 502** — No provider keys or route entries are configured, or all providers failed. Check the admin UI and the Worker's **Logs** tab under **Workers & Pages → llm-router**.
 
-**Migrations fail on remote** — Ensure Step 6 used the correct `database_id` and Step 9 was run before or after deploy (migrations can run before the first deploy).
+**Migrations fail on remote** — Ensure the **`dev`** environment variable `D1_DATABASE_ID` (or local `wrangler.jsonc`) matches Step 4, and migrations have been applied (Deploy workflow or `npm run db:migrate`).
 
-**Redeploying after code changes** — Run `npm run deploy` again. Run `npm run db:migrate` only when new files appear in `migrations/`.
+**Redeploying after code changes** — Run the **Deploy** GitHub Action again, or `npm run deploy` locally. Migrations run automatically in CI; locally, run `npm run db:migrate` only when new files appear in `migrations/`.
 
 ## Configure Providers
 
@@ -425,3 +464,4 @@ Real-provider verification requires adding at least one provider API key in the 
 | `tests/smoke/gemini-key.mjs` | Optional Gemini key integration test | Yes, skips without `GEMINI_API_KEY` (`npm run test:integration`) |
 | `tests/smoke/router.mjs` | Smoke tests against a running router | No — needs `wrangler dev` (`npm run test:smoke:router`) |
 | `tests/smoke/run-all.mjs` | Router smoke + Gemini integration | Manual (`npm run test:smoke`) |
+| `.github/workflows/deploy.yml` | Manual deploy to `dev` environment | No — run from **Actions → Deploy** |

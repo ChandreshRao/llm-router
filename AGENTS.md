@@ -118,6 +118,7 @@ extracting first.
 ## CI
 
 GitHub Actions runs: `lint` → `typecheck` → `npm test` → `build` → `wrangler deploy --dry-run`.
+Deploy is a separate manual workflow targeting the GitHub **`dev`** environment: **Actions → Deploy** (`.github/workflows/deploy.yml`). Other environments can be added in GitHub and selected by changing `environment:` in that workflow.
 Changes should pass all five locally before opening a PR.
 
 PR titles must use [Conventional Commits](https://www.conventionalcommits.org/) prefixes
